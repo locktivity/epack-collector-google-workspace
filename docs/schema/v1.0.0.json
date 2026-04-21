@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/locktivity/epack-collector-google-workspace/docs/schema/v1.0.0.json",
+  "title": "Google Workspace Posture",
+  "description": "Google Workspace identity and security posture artifact.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "collected_at",
+    "usage_report_date",
+    "provider",
+    "org_domain",
+    "customer_id",
+    "users",
+    "activity",
+    "authentication",
+    "admins",
+    "passwords",
+    "apps"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "collected_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the collector ran."
+    },
+    "usage_report_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Date of the Google Workspace usage report snapshot (typically yesterday)."
+    },
+    "provider": {
+      "type": "string",
+      "const": "google-workspace"
+    },
+    "org_domain": {
+      "type": "string",
+      "description": "Primary domain of the Google Workspace tenant."
+    },
+    "customer_id": {
+      "type": "string",
+      "description": "Google Workspace customer ID."
+    },
+    "users": {
+      "type": "object",
+      "required": ["total", "suspended", "archived", "locked_pct", "inactive_pct", "inactive_days"],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total user accounts."
+        },
+        "suspended": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Suspended user accounts."
+        },
+        "archived": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Archived user accounts."
+        },
+        "locked_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users currently locked out."
+        },
+        "inactive_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of active users inactive for 90+ days (from Directory API lastLoginTime)."
+        },
+        "inactive_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Inactivity threshold in days."
+        }
+      },
+      "additionalProperties": false
+    },
+    "activity": {
+      "type": "object",
+      "required": ["active_7d_pct", "active_30d_pct"],
+      "properties": {
+        "active_7d_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users who logged in within the last 7 days."
+        },
+        "active_30d_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users who logged in within the last 30 days."
+        }
+      },
+      "additionalProperties": false
+    },
+    "authentication": {
+      "type": "object",
+      "required": [
+        "2sv_enrolled_pct",
+        "2sv_enforced_pct",
+        "2sv_protected_pct",
+        "passkey_users_pct",
+        "security_keys_total"
+      ],
+      "properties": {
+        "2sv_enrolled_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users enrolled in 2-step verification."
+        },
+        "2sv_enforced_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users with 2-step verification enforced by policy."
+        },
+        "2sv_protected_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users actually protected by 2-step verification."
+        },
+        "passkey_users_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users with passkeys enrolled."
+        },
+        "security_keys_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of registered security keys across the tenant."
+        }
+      },
+      "additionalProperties": false
+    },
+    "admins": {
+      "type": "object",
+      "required": [
+        "super_admin_count",
+        "delegated_admin_count",
+        "privileged_users_2sv_enforced_pct"
+      ],
+      "properties": {
+        "super_admin_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of active super administrators."
+        },
+        "delegated_admin_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of active delegated administrators."
+        },
+        "privileged_users_2sv_enforced_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of active privileged users with 2-step verification enforced."
+        }
+      },
+      "additionalProperties": false
+    },
+    "passwords": {
+      "type": "object",
+      "required": ["weak_password_pct", "password_length_non_compliant_pct"],
+      "properties": {
+        "weak_password_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users with weak passwords."
+        },
+        "password_length_non_compliant_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of users with passwords that do not meet length requirements."
+        }
+      },
+      "additionalProperties": false
+    },
+    "apps": {
+      "type": "object",
+      "required": ["authorized_apps_count"],
+      "properties": {
+        "authorized_apps_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of third-party apps authorized in the tenant."
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Informational warnings about data gaps or caveats."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
