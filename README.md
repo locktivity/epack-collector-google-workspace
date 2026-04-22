@@ -15,9 +15,10 @@ See [docs/overview.md](docs/overview.md), [docs/configuration.md](docs/configura
 - login activity (7-day and 30-day active percentages)
 - 2-step verification enrollment, enforcement, and protection coverage
 - passkey adoption and security key counts
-- privileged user counts and admin 2SV enforcement
+- unique privileged user counts plus admin 2SV enrollment and enforcement
 - password hygiene (weak passwords, length non-compliance)
 - authorized third-party app count
+- Context-Aware Access device-state deny evidence when audit logs are available
 
 ## Quick Start
 
@@ -45,6 +46,8 @@ epack collect
 Optional config keys:
 
 - `customer`: custom Google customer key. Defaults to `my_customer`.
+- `organization_id`: optional Google Cloud organization ID used to discover an Access Context Manager policy for `device_access` config enrichment.
+- `access_policy`: optional Access Context Manager policy name or numeric ID. If set, it takes precedence over `organization_id`.
 
 ## Authentication
 
@@ -55,6 +58,14 @@ Required scopes:
 - `https://www.googleapis.com/auth/admin.directory.user.readonly`
 - `https://www.googleapis.com/auth/admin.directory.customer.readonly`
 - `https://www.googleapis.com/auth/admin.reports.usage.readonly`
+
+Recommended optional scope for `device_access` enrichment:
+
+- `https://www.googleapis.com/auth/admin.reports.audit.readonly`
+
+Optional Google Cloud permission for Access Context Manager enrichment:
+
+- service account IAM role `roles/accesscontextmanager.policyReader` on the relevant organization
 
 See [docs/configuration.md](docs/configuration.md) for the full setup flow.
 

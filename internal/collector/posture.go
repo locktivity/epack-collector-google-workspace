@@ -7,6 +7,9 @@ const (
 	SchemaVersion = "1.0.0"
 	// DefaultInactiveDays is the threshold for inactive user detection.
 	DefaultInactiveDays = 90
+	// DefaultContextAwareAccessLookbackDays is the audit lookback window used
+	// to search for Context-Aware Access deny events that cite device state.
+	DefaultContextAwareAccessLookbackDays = 90
 )
 
 // StatusFunc reports indeterminate progress.
@@ -18,6 +21,8 @@ type ProgressFunc func(current, total int64, message string)
 // Config holds collector configuration.
 type Config struct {
 	Customer        string `json:"customer,omitempty"`
+	OrganizationID  string `json:"organization_id,omitempty"`
+	AccessPolicy    string `json:"access_policy,omitempty"`
 	AdminEmail      string `json:"admin_email"`
 	CredentialsJSON string `json:"-"`
 
@@ -28,19 +33,20 @@ type Config struct {
 
 // OrgPosture is the detailed Google Workspace posture artifact.
 type OrgPosture struct {
-	SchemaVersion   string          `json:"schema_version"`
-	CollectedAt     string          `json:"collected_at"`
-	UsageReportDate string          `json:"usage_report_date"`
-	Provider        string          `json:"provider"`
-	OrgDomain       string          `json:"org_domain"`
-	CustomerID      string          `json:"customer_id"`
-	Users           UserMetrics     `json:"users"`
-	Activity        ActivityMetrics `json:"activity"`
-	Authentication  AuthMetrics     `json:"authentication"`
-	Admins          AdminMetrics    `json:"admins"`
-	Passwords       PasswordMetrics `json:"passwords"`
-	Apps            AppMetrics      `json:"apps"`
-	Diagnostics     *Diagnostics    `json:"diagnostics,omitempty"`
+	SchemaVersion   string               `json:"schema_version"`
+	CollectedAt     string               `json:"collected_at"`
+	UsageReportDate string               `json:"usage_report_date"`
+	Provider        string               `json:"provider"`
+	OrgDomain       string               `json:"org_domain"`
+	CustomerID      string               `json:"customer_id"`
+	Users           UserMetrics          `json:"users"`
+	Activity        ActivityMetrics      `json:"activity"`
+	Authentication  AuthMetrics          `json:"authentication"`
+	Admins          AdminMetrics         `json:"admins"`
+	Passwords       PasswordMetrics      `json:"passwords"`
+	Apps            AppMetrics           `json:"apps"`
+	DeviceAccess    *DeviceAccessMetrics `json:"device_access,omitempty"`
+	Diagnostics     *Diagnostics         `json:"diagnostics,omitempty"`
 }
 
 // UserMetrics contains user population counts.
@@ -68,10 +74,12 @@ type AuthMetrics struct {
 	SecurityKeysTotal int     `json:"security_keys_total"`
 }
 
-// AdminMetrics contains privileged user counts and enforcement.
+// AdminMetrics contains privileged user counts plus 2-step enrollment and enforcement.
 type AdminMetrics struct {
+	PrivilegedUsersCount          int     `json:"privileged_users_count"`
 	SuperAdminCount               int     `json:"super_admin_count"`
 	DelegatedAdminCount           int     `json:"delegated_admin_count"`
+	PrivilegedUsers2SVEnrolledPct float64 `json:"privileged_users_2sv_enrolled_pct"`
 	PrivilegedUsers2SVEnforcedPct float64 `json:"privileged_users_2sv_enforced_pct"`
 }
 
@@ -84,6 +92,28 @@ type PasswordMetrics struct {
 // AppMetrics contains application security metrics.
 type AppMetrics struct {
 	AuthorizedAppsCount int `json:"authorized_apps_count"`
+}
+
+// DeviceAccessMetrics captures deny-event evidence that Context-Aware Access
+// evaluated device-state conditions for Google Workspace resources.
+type DeviceAccessMetrics struct {
+	LookbackDays                      int                          `json:"lookback_days"`
+	ContextAwareAccessDeniedEvents    int                          `json:"context_aware_access_denied_events"`
+	DeviceStateDeniedEvents           int                          `json:"device_state_denied_events"`
+	ManagedDeviceRequirementEvidenced bool                         `json:"managed_device_requirement_evidenced"`
+	AccessContextManager              *AccessContextManagerMetrics `json:"access_context_manager,omitempty"`
+}
+
+// AccessContextManagerMetrics summarizes Access Context Manager access-level
+// config that is relevant to Workspace device access.
+type AccessContextManagerMetrics struct {
+	AccessPolicyName                    string   `json:"access_policy_name"`
+	AccessPolicyParent                  string   `json:"access_policy_parent,omitempty"`
+	BasicAccessLevelsCount              int      `json:"basic_access_levels_count"`
+	CustomAccessLevelsCount             int      `json:"custom_access_levels_count"`
+	BasicDevicePolicyAccessLevelsCount  int      `json:"basic_device_policy_access_levels_count"`
+	BasicManagedDeviceAccessLevelsCount int      `json:"basic_managed_device_access_levels_count"`
+	BasicDevicePolicyAccessLevelTitles  []string `json:"basic_device_policy_access_level_titles,omitempty"`
 }
 
 // Diagnostics contains informational gaps and caveats.

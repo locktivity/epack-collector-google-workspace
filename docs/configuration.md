@@ -43,12 +43,24 @@ In the [Google Workspace Admin Console](https://admin.google.com/):
    - `https://www.googleapis.com/auth/admin.directory.user.readonly`
    - `https://www.googleapis.com/auth/admin.directory.customer.readonly`
    - `https://www.googleapis.com/auth/admin.reports.usage.readonly`
+   - `https://www.googleapis.com/auth/admin.reports.audit.readonly` (recommended, enables `device_access` evidence from Context-Aware Access audit logs)
 
 5. Click **Authorize**
 
 ### Step 6: Choose the Admin User to Impersonate
 
-Set `admin_email` to a Google Workspace admin account. The service account impersonates this user to access admin APIs. The account needs permission to read users, customer metadata, and usage reports.
+Set `admin_email` to a Google Workspace admin account. The service account impersonates this user to access admin APIs. The account needs permission to read users, customer metadata, usage reports, and optionally audit activity for Context-Aware Access.
+
+### Optional Step 7: Enable Access Context Manager Enrichment
+
+If you want the detailed artifact to include Access Context Manager access-level config alongside Context-Aware Access deny evidence:
+
+1. Grant the service account the **Access Context Manager Reader** role (`roles/accesscontextmanager.policyReader`) on the relevant Google Cloud organization.
+2. Set either:
+   - `organization_id` to let the collector discover the access policy under `organizations/{id}`, or
+   - `access_policy` to an explicit Access Context Manager policy resource like `accessPolicies/123456789` (or just the numeric ID).
+
+This enrichment is optional. It improves the detailed `device_access` section, but the normalized artifact remains conservative because Workspace-side app assignment and monitor-mode details are not fully exposed by API.
 
 ## Configuration Options
 
@@ -56,6 +68,8 @@ Set `admin_email` to a Google Workspace admin account. The service account imper
 |--------|----------|-------------|
 | `admin_email` | Yes | Google Workspace admin account to impersonate |
 | `customer` | No | Google customer key (defaults to `my_customer`, which resolves to your tenant) |
+| `organization_id` | No | Google Cloud organization ID used to discover an Access Context Manager policy for `device_access` config enrichment |
+| `access_policy` | No | Explicit Access Context Manager policy resource or numeric ID. Takes precedence over `organization_id` |
 
 ## Environment Variables
 
@@ -78,9 +92,11 @@ Set `admin_email` to a Google Workspace admin account. The service account imper
 
 ### 403 Forbidden
 
-- Verify all three scopes are authorized in the Admin Console under domain-wide delegation
+- Verify all required scopes are authorized in the Admin Console under domain-wide delegation
 - Ensure the admin account has permission to access usage reports and user data
 - Check that the Admin SDK API is enabled in the Google Cloud project
+- If only the audit scope is missing, the collector still emits the core posture artifact but omits `device_access` evidence and adds a warning to diagnostics
+- If Access Context Manager enrichment is configured, verify the service account has `roles/accesscontextmanager.policyReader` on the organization and that the `organization_id` or `access_policy` value is correct
 
 ### Empty or missing usage report data
 

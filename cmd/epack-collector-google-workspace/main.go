@@ -31,6 +31,8 @@ func run(ctx componentsdk.CollectorContext) error {
 	cfg := ctx.Config()
 	config := collector.Config{
 		Customer:        getString(cfg, "customer"),
+		OrganizationID:  getString(cfg, "organization_id"),
+		AccessPolicy:    getString(cfg, "access_policy"),
 		AdminEmail:      getString(cfg, "admin_email"),
 		CredentialsJSON: ctx.Secret("GOOGLE_SERVICE_ACCOUNT_JSON"),
 		OnStatus:        ctx.Status,

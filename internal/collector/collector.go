@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -152,6 +153,37 @@ func (c *Collector) Collect(ctx context.Context) (*OrgPosture, error) {
 	posture.Admins = userScan.admins
 	posture.Users.InactivePct = percentFloat(userScan.inactiveCount, userScan.activeCount)
 
+	// Step 4: Query Context-Aware Access deny events for evidence that Google
+	// evaluated device-state conditions for tenant access. These logs are
+	// deny-only and can include monitor-mode hits, so they are a useful positive
+	// signal but not a complete policy model.
+	c.status("Scanning Context-Aware Access audit events for device-state deny evidence...")
+	deviceAccess, err := c.scanDeviceAccess(ctx, customer.ID, collectedAt.AddDate(0, 0, -DefaultContextAwareAccessLookbackDays))
+	if err != nil {
+		c.warn("context-aware access audit scan failed; device access posture omitted: %v", err)
+	} else {
+		posture.DeviceAccess = &deviceAccess
+		if deviceAccess.ManagedDeviceRequirementEvidenced {
+			c.warn("device access posture is inferred from deny-only Context-Aware Access audit events; absence of events is not evidence of absence, and monitor-mode access levels may produce similar deny events")
+		}
+	}
+
+	if posture.DeviceAccess != nil && c.hasAccessContextManagerConfig() {
+		c.status("Scanning Access Context Manager access-level config...")
+		acm, err := c.scanAccessContextManager(ctx)
+		if err != nil {
+			c.warn("access context manager scan failed; config enrichment omitted: %v", err)
+		} else {
+			posture.DeviceAccess.AccessContextManager = acm
+			if acm.CustomAccessLevelsCount > 0 {
+				c.warn("access context manager includes %d custom access levels; device-policy summary only analyzes basic access levels", acm.CustomAccessLevelsCount)
+			}
+			if posture.DeviceAccess.ManagedDeviceRequirementEvidenced && acm.BasicDevicePolicyAccessLevelsCount == 0 && acm.CustomAccessLevelsCount == 0 {
+				c.warn("device-state deny evidence was observed, but no basic Access Context Manager device-policy levels were found; this can indicate Workspace-side assignment gaps or monitor-mode ambiguity")
+			}
+		}
+	}
+
 	c.warn("usage report metrics are as of %s; admin counts and inactivity reflect current Directory state and may differ slightly", reportDate)
 	posture.Diagnostics = c.diagnostics()
 
@@ -165,11 +197,21 @@ type userScanResult struct {
 	inactiveCount int
 }
 
+type deviceAccessScanResult struct {
+	contextAwareAccessDeniedEvents int
+	deviceStateDeniedEvents        int
+}
+
+func (c *Collector) hasAccessContextManagerConfig() bool {
+	return strings.TrimSpace(c.config.AccessPolicy) != "" || strings.TrimSpace(c.config.OrganizationID) != ""
+}
+
 func (c *Collector) scanUsers(ctx context.Context, customerKey string, inactiveThreshold time.Time) (userScanResult, error) {
 	var (
 		superAdmins           int
 		delegatedAdmins       int
 		privilegedTotal       int
+		privileged2SVEnrolled int
 		privileged2SVEnforced int
 		activeCount           int
 		inactiveCount         int
@@ -203,10 +245,13 @@ func (c *Collector) scanUsers(ctx context.Context, customerKey string, inactiveT
 				delegatedAdmins++
 				isPrivileged = true
 			}
-			if isPrivileged && user.IsEnforcedIn2Sv {
-				privileged2SVEnforced++
-			}
 			if isPrivileged {
+				if user.IsEnrolledIn2Sv {
+					privileged2SVEnrolled++
+				}
+				if user.IsEnforcedIn2Sv {
+					privileged2SVEnforced++
+				}
 				privilegedTotal++
 			}
 		}
@@ -218,13 +263,156 @@ func (c *Collector) scanUsers(ctx context.Context, customerKey string, inactiveT
 
 	return userScanResult{
 		admins: AdminMetrics{
+			PrivilegedUsersCount:          privilegedTotal,
 			SuperAdminCount:               superAdmins,
 			DelegatedAdminCount:           delegatedAdmins,
+			PrivilegedUsers2SVEnrolledPct: percentFloat(privileged2SVEnrolled, privilegedTotal),
 			PrivilegedUsers2SVEnforcedPct: percentFloat(privileged2SVEnforced, privilegedTotal),
 		},
 		activeCount:   activeCount,
 		inactiveCount: inactiveCount,
 	}, nil
+}
+
+func (c *Collector) scanDeviceAccess(ctx context.Context, customerID string, startTime time.Time) (DeviceAccessMetrics, error) {
+	var result deviceAccessScanResult
+
+	err := c.client.ListContextAwareAccessEvents(ctx, customerID, startTime, func(events []googleworkspace.ContextAwareAccessEvent) error {
+		result.contextAwareAccessDeniedEvents += len(events)
+		for _, event := range events {
+			if strings.TrimSpace(event.DeviceState) == "" {
+				continue
+			}
+			result.deviceStateDeniedEvents++
+		}
+		return nil
+	})
+	if err != nil {
+		return DeviceAccessMetrics{}, err
+	}
+
+	return DeviceAccessMetrics{
+		LookbackDays:                      DefaultContextAwareAccessLookbackDays,
+		ContextAwareAccessDeniedEvents:    result.contextAwareAccessDeniedEvents,
+		DeviceStateDeniedEvents:           result.deviceStateDeniedEvents,
+		ManagedDeviceRequirementEvidenced: result.deviceStateDeniedEvents > 0,
+	}, nil
+}
+
+func (c *Collector) scanAccessContextManager(ctx context.Context) (*AccessContextManagerMetrics, error) {
+	policy, err := c.resolveAccessPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	summary := &AccessContextManagerMetrics{
+		AccessPolicyName:   policy.Name,
+		AccessPolicyParent: policy.Parent,
+	}
+
+	err = c.client.ListAccessLevels(ctx, policy.Name, func(levels []googleworkspace.AccessLevel) error {
+		for _, level := range levels {
+			if level.Custom {
+				summary.CustomAccessLevelsCount++
+				continue
+			}
+
+			summary.BasicAccessLevelsCount++
+			if !level.HasDevicePolicy {
+				continue
+			}
+
+			summary.BasicDevicePolicyAccessLevelsCount++
+			summary.BasicDevicePolicyAccessLevelTitles = append(summary.BasicDevicePolicyAccessLevelTitles, accessLevelDisplayName(level))
+			if levelExplicitlyRequiresManagedDevice(level) {
+				summary.BasicManagedDeviceAccessLevelsCount++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slices.Sort(summary.BasicDevicePolicyAccessLevelTitles)
+	return summary, nil
+}
+
+func (c *Collector) resolveAccessPolicy(ctx context.Context) (googleworkspace.AccessPolicy, error) {
+	if policy := normalizeAccessPolicyName(c.config.AccessPolicy); policy != "" {
+		return googleworkspace.AccessPolicy{
+			Name:   policy,
+			Parent: normalizeOrganizationParent(c.config.OrganizationID),
+		}, nil
+	}
+
+	parent := normalizeOrganizationParent(c.config.OrganizationID)
+	if parent == "" {
+		return googleworkspace.AccessPolicy{}, fmt.Errorf("organization_id or access_policy is required for access context manager enrichment")
+	}
+
+	var policies []googleworkspace.AccessPolicy
+	err := c.client.ListAccessPolicies(ctx, parent, func(batch []googleworkspace.AccessPolicy) error {
+		policies = append(policies, batch...)
+		return nil
+	})
+	if err != nil {
+		return googleworkspace.AccessPolicy{}, err
+	}
+	if len(policies) == 0 {
+		return googleworkspace.AccessPolicy{}, fmt.Errorf("no access context manager policy found for %s", parent)
+	}
+
+	slices.SortFunc(policies, func(a, b googleworkspace.AccessPolicy) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	if len(policies) > 1 {
+		c.warn("multiple access context manager policies found for %s; using %s", parent, policies[0].Name)
+	}
+
+	return policies[0], nil
+}
+
+func normalizeOrganizationParent(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "organizations/") {
+		return value
+	}
+	return "organizations/" + value
+}
+
+func normalizeAccessPolicyName(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "accessPolicies/") {
+		return value
+	}
+	return "accessPolicies/" + value
+}
+
+func accessLevelDisplayName(level googleworkspace.AccessLevel) string {
+	if strings.TrimSpace(level.Title) != "" {
+		return level.Title
+	}
+	return level.Name
+}
+
+func levelExplicitlyRequiresManagedDevice(level googleworkspace.AccessLevel) bool {
+	if len(level.AllowedDeviceManagementLevels) == 0 {
+		return false
+	}
+
+	for _, managementLevel := range level.AllowedDeviceManagementLevels {
+		if managementLevel == "NONE" || managementLevel == "MANAGEMENT_UNSPECIFIED" {
+			return false
+		}
+	}
+	return true
 }
 
 // maxReportRetries is the number of progressively older dates to try when

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	accesscontextmanager "google.golang.org/api/accesscontextmanager/v1"
 	admin "google.golang.org/api/admin/directory/v1"
 	reports "google.golang.org/api/admin/reports/v1"
 	"google.golang.org/api/option"
@@ -233,6 +235,275 @@ func TestAPIClientListUsersPaginatesAndMaps(t *testing.T) {
 	}
 }
 
+func TestAPIClientListContextAwareAccessEventsPaginatesAndMaps(t *testing.T) {
+	firstEventTime := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	secondEventTime := time.Date(2026, 4, 7, 18, 30, 0, 0, time.UTC)
+
+	requests := 0
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/admin/reports/v1/activity/users/all/applications/context_aware_access" {
+			return
+		}
+		if got := r.URL.Query().Get("customerId"); got != "C123" {
+			t.Fatalf("customerId = %q, want C123", got)
+		}
+		if got := r.URL.Query().Get("eventName"); got != "ACCESS_DENY_EVENT" {
+			t.Fatalf("eventName = %q, want ACCESS_DENY_EVENT", got)
+		}
+		if got := r.URL.Query().Get("startTime"); got != "2026-04-01T00:00:00Z" {
+			t.Fatalf("startTime = %q, want 2026-04-01T00:00:00Z", got)
+		}
+		if got := r.URL.Query().Get("maxResults"); got != "1000" {
+			t.Fatalf("maxResults = %q, want 1000", got)
+		}
+
+		requests++
+		switch requests {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{
+					{
+						"actor": map[string]any{
+							"email": "admin@example.com",
+						},
+						"id": map[string]any{
+							"time": strconv.FormatInt(firstEventTime.Unix(), 10),
+						},
+						"events": []map[string]any{
+							{
+								"name": "ACCESS_DENY_EVENT",
+								"parameters": []map[string]any{
+									{"name": "CAA_APPLICATION", "value": "Gmail"},
+									{"name": "CAA_DEVICE_STATE", "value": "Unmanaged"},
+									{"name": "CAA_ACCESS_LEVEL_UNSATISFIED", "value": "Corp managed device"},
+								},
+							},
+							{
+								"name": "IGNORED_EVENT",
+							},
+						},
+					},
+				},
+				"nextPageToken": "page-2",
+			})
+		case 2:
+			if got := r.URL.Query().Get("pageToken"); got != "page-2" {
+				t.Fatalf("pageToken = %q, want page-2", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{
+					{
+						"actor": map[string]any{
+							"email": "user@example.com",
+						},
+						"id": map[string]any{
+							"time": strconv.FormatInt(secondEventTime.Unix(), 10),
+						},
+						"events": []map[string]any{
+							{
+								"name": "ACCESS_DENY_EVENT",
+								"parameters": []map[string]any{
+									{"name": "BLOCKED_API_ACCESS", "value": "Drive API"},
+									{"name": "CAA_APPLICATION", "value": "Drive"},
+								},
+							},
+						},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	})
+
+	var got []ContextAwareAccessEvent
+	err := client.ListContextAwareAccessEvents(
+		context.Background(),
+		"C123",
+		time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		func(events []ContextAwareAccessEvent) error {
+			got = append(got, events...)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("ListContextAwareAccessEvents() error = %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(got))
+	}
+	if got[0].UserEmail != "admin@example.com" {
+		t.Fatalf("first event UserEmail = %q, want admin@example.com", got[0].UserEmail)
+	}
+	if got[0].Application != "Gmail" {
+		t.Fatalf("first event Application = %q, want Gmail", got[0].Application)
+	}
+	if got[0].DeviceState != "Unmanaged" {
+		t.Fatalf("first event DeviceState = %q, want Unmanaged", got[0].DeviceState)
+	}
+	if got[0].AccessLevelUnsatisfied != "Corp managed device" {
+		t.Fatalf("first event AccessLevelUnsatisfied = %q, want Corp managed device", got[0].AccessLevelUnsatisfied)
+	}
+	if !got[0].OccurredAt.Equal(firstEventTime) {
+		t.Fatalf("first event OccurredAt = %s, want %s", got[0].OccurredAt, firstEventTime)
+	}
+	if got[1].BlockedAPIAccess != "Drive API" {
+		t.Fatalf("second event BlockedAPIAccess = %q, want Drive API", got[1].BlockedAPIAccess)
+	}
+	if got[1].Application != "Drive" {
+		t.Fatalf("second event Application = %q, want Drive", got[1].Application)
+	}
+	if got[1].DeviceState != "" {
+		t.Fatalf("second event DeviceState = %q, want empty", got[1].DeviceState)
+	}
+	if !got[1].OccurredAt.Equal(secondEventTime) {
+		t.Fatalf("second event OccurredAt = %s, want %s", got[1].OccurredAt, secondEventTime)
+	}
+}
+
+func TestAPIClientListAccessPoliciesPaginatesAndMaps(t *testing.T) {
+	requests := 0
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/accessPolicies" {
+			return
+		}
+		if got := r.URL.Query().Get("parent"); got != "organizations/123456" {
+			t.Fatalf("parent = %q, want organizations/123456", got)
+		}
+
+		requests++
+		switch requests {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accessPolicies": []map[string]any{
+					{
+						"name":   "accessPolicies/111",
+						"parent": "organizations/123456",
+						"title":  "Corp policy",
+					},
+				},
+				"nextPageToken": "page-2",
+			})
+		case 2:
+			if got := r.URL.Query().Get("pageToken"); got != "page-2" {
+				t.Fatalf("pageToken = %q, want page-2", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accessPolicies": []map[string]any{
+					{
+						"name":   "accessPolicies/222",
+						"parent": "organizations/123456",
+						"title":  "Scoped policy",
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	})
+
+	var got []AccessPolicy
+	err := client.ListAccessPolicies(context.Background(), "organizations/123456", func(policies []AccessPolicy) error {
+		got = append(got, policies...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ListAccessPolicies() error = %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("len(policies) = %d, want 2", len(got))
+	}
+	if got[0].Name != "accessPolicies/111" || got[0].Title != "Corp policy" {
+		t.Fatalf("first policy = %+v, want accessPolicies/111 / Corp policy", got[0])
+	}
+	if got[1].Name != "accessPolicies/222" || got[1].Parent != "organizations/123456" {
+		t.Fatalf("second policy = %+v, want accessPolicies/222 under organizations/123456", got[1])
+	}
+}
+
+func TestAPIClientListAccessLevelsPaginatesAndMaps(t *testing.T) {
+	requests := 0
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/accessPolicies/111/accessLevels" {
+			return
+		}
+
+		requests++
+		switch requests {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accessLevels": []map[string]any{
+					{
+						"name":  "accessPolicies/111/accessLevels/device_trust",
+						"title": "Device Trust",
+						"basic": map[string]any{
+							"conditions": []map[string]any{
+								{
+									"devicePolicy": map[string]any{
+										"allowedDeviceManagementLevels": []string{"BASIC", "COMPLETE"},
+										"allowedEncryptionStatuses":     []string{"ENCRYPTED"},
+										"requireScreenlock":             true,
+										"requireCorpOwned":              true,
+										"osConstraints": []map[string]any{
+											{"osType": "DESKTOP_MAC"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"nextPageToken": "page-2",
+			})
+		case 2:
+			if got := r.URL.Query().Get("pageToken"); got != "page-2" {
+				t.Fatalf("pageToken = %q, want page-2", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accessLevels": []map[string]any{
+					{
+						"name":   "accessPolicies/111/accessLevels/custom_expr",
+						"title":  "Custom Expr",
+						"custom": map[string]any{"expr": map[string]any{"expression": "true"}},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	})
+
+	var got []AccessLevel
+	err := client.ListAccessLevels(context.Background(), "accessPolicies/111", func(levels []AccessLevel) error {
+		got = append(got, levels...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ListAccessLevels() error = %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("len(levels) = %d, want 2", len(got))
+	}
+	if got[0].Title != "Device Trust" || !got[0].HasDevicePolicy {
+		t.Fatalf("first level = %+v, want basic device policy level", got[0])
+	}
+	if !got[0].RequiresScreenlock || !got[0].RequiresCorpOwned {
+		t.Fatalf("first level policy flags = %+v, want screenlock+corp-owned", got[0])
+	}
+	if got[0].OSConstraintCount != 1 {
+		t.Fatalf("first level OSConstraintCount = %d, want 1", got[0].OSConstraintCount)
+	}
+	if len(got[0].AllowedDeviceManagementLevels) != 2 {
+		t.Fatalf("first level AllowedDeviceManagementLevels = %#v, want 2 values", got[0].AllowedDeviceManagementLevels)
+	}
+	if !got[1].Custom {
+		t.Fatalf("second level = %+v, want custom level", got[1])
+	}
+}
+
 func newTestClient(t *testing.T, handler http.HandlerFunc) *APIClient {
 	t.Helper()
 
@@ -272,7 +543,16 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *APIClient {
 		t.Fatalf("reports.NewService() error = %v", err)
 	}
 
-	return NewClientWithServices(dirService, reportsService)
+	accessContextService, err := accesscontextmanager.NewService(
+		context.Background(),
+		option.WithHTTPClient(httpClient),
+		option.WithEndpoint("https://unit.test/"),
+	)
+	if err != nil {
+		t.Fatalf("accesscontextmanager.NewService() error = %v", err)
+	}
+
+	return NewClientWithServices(dirService, reportsService, accessContextService)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

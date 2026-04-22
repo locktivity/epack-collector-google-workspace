@@ -33,6 +33,7 @@ collectors:
     source: locktivity/epack-collector-google-workspace@^0.1
     config:
       customer: C0123abc
+      organization_id: "987654321"
       admin_email: admin@example.com
     secrets:
       - GOOGLE_SERVICE_ACCOUNT_JSON
@@ -72,8 +73,10 @@ The collector always emits the detailed artifact. The normalized artifact is inc
     "security_keys_total": 35
   },
   "admins": {
+    "privileged_users_count": 7,
     "super_admin_count": 3,
     "delegated_admin_count": 5,
+    "privileged_users_2sv_enrolled_pct": 85.71,
     "privileged_users_2sv_enforced_pct": 100.0
   },
   "passwords": {
@@ -82,6 +85,21 @@ The collector always emits the detailed artifact. The normalized artifact is inc
   },
   "apps": {
     "authorized_apps_count": 47
+  },
+  "device_access": {
+    "lookback_days": 90,
+    "context_aware_access_denied_events": 12,
+    "device_state_denied_events": 4,
+    "managed_device_requirement_evidenced": true,
+    "access_context_manager": {
+      "access_policy_name": "accessPolicies/123456789",
+      "access_policy_parent": "organizations/987654321",
+      "basic_access_levels_count": 6,
+      "custom_access_levels_count": 1,
+      "basic_device_policy_access_levels_count": 2,
+      "basic_managed_device_access_levels_count": 1,
+      "basic_device_policy_access_level_titles": ["Corp Device", "High Trust Device"]
+    }
   }
 }
 ```
@@ -98,10 +116,30 @@ The collector always emits the detailed artifact. The normalized artifact is inc
     "mfa_coverage_pct": 90.0,
     "mfa_phishing_resistant_pct": 12.5,
     "inactive_pct": 4.76,
-    "locked_out_pct": 0.83
+    "locked_out_pct": 0.83,
+    "weak_password_pct": 4.17,
+    "password_policy_noncompliant_pct": 2.5
+  },
+  "app_security": {
+    "authorized_third_party_apps_count": 47
+  },
+  "privileged_access": {
+    "privileged_users_count": 7,
+    "super_admin_count": 3,
+    "privileged_mfa_coverage_pct": 85.71,
+    "standing_privileged_users_count": 7
   },
   "policy": {
-    "mfa_required": true
+    "mfa_required": false,
+    "mfa_required_coverage_pct": 88.33,
+    "legacy_auth_blocked": true
+  },
+  "lifecycle": {
+    "suspended_pct": 8.33,
+    "archived_pct": 4.17
+  },
+  "device_access": {
+    "managed_device_required": true
   }
 }
 ```

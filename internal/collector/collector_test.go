@@ -26,9 +26,19 @@ type mockClient struct {
 	users    []googleworkspace.User
 	usersErr error
 
-	lastCustomerKey string
-	lastCustomerID  string
-	lastReportDate  string
+	contextAwareAccessEvents []googleworkspace.ContextAwareAccessEvent
+	contextAwareAccessErr    error
+
+	accessPolicies    []googleworkspace.AccessPolicy
+	accessPoliciesErr error
+	accessLevels      []googleworkspace.AccessLevel
+	accessLevelsErr   error
+
+	lastCustomerKey        string
+	lastCustomerID         string
+	lastReportDate         string
+	lastAccessPolicyParent string
+	lastAccessLevelsPolicy string
 }
 
 type mockReportResult struct {
@@ -66,6 +76,38 @@ func (m *mockClient) ListUsers(ctx context.Context, customerKey string, callback
 	return callback(m.users)
 }
 
+func (m *mockClient) ListContextAwareAccessEvents(ctx context.Context, customerID string, startTime time.Time, callback func([]googleworkspace.ContextAwareAccessEvent) error) error {
+	if m.contextAwareAccessErr != nil {
+		return m.contextAwareAccessErr
+	}
+	if len(m.contextAwareAccessEvents) == 0 {
+		return nil
+	}
+	return callback(m.contextAwareAccessEvents)
+}
+
+func (m *mockClient) ListAccessPolicies(ctx context.Context, parent string, callback func([]googleworkspace.AccessPolicy) error) error {
+	m.lastAccessPolicyParent = parent
+	if m.accessPoliciesErr != nil {
+		return m.accessPoliciesErr
+	}
+	if len(m.accessPolicies) == 0 {
+		return nil
+	}
+	return callback(m.accessPolicies)
+}
+
+func (m *mockClient) ListAccessLevels(ctx context.Context, policyName string, callback func([]googleworkspace.AccessLevel) error) error {
+	m.lastAccessLevelsPolicy = policyName
+	if m.accessLevelsErr != nil {
+		return m.accessLevelsErr
+	}
+	if len(m.accessLevels) == 0 {
+		return nil
+	}
+	return callback(m.accessLevels)
+}
+
 func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
 
@@ -92,15 +134,19 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 			NumLockedUsers:                     2,
 		},
 		users: []googleworkspace.User{
-			{PrimaryEmail: "admin1@example.com", IsAdmin: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
-			{PrimaryEmail: "admin2@example.com", IsAdmin: true, IsEnforcedIn2Sv: false, LastLoginTime: now},
-			{PrimaryEmail: "deleg@example.com", IsDelegatedAdmin: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
-			{PrimaryEmail: "both@example.com", IsAdmin: true, IsDelegatedAdmin: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "admin1@example.com", IsAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "admin2@example.com", IsAdmin: true, IsEnrolledIn2Sv: false, IsEnforcedIn2Sv: false, LastLoginTime: now},
+			{PrimaryEmail: "deleg@example.com", IsDelegatedAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "both@example.com", IsAdmin: true, IsDelegatedAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
 			{PrimaryEmail: "suspended-admin@example.com", IsAdmin: true, Suspended: true},
 			{PrimaryEmail: "archived-admin@example.com", IsDelegatedAdmin: true, Archived: true},
 			{PrimaryEmail: "active-user@example.com", LastLoginTime: now},
 			{PrimaryEmail: "inactive-user@example.com", LastLoginTime: now.AddDate(0, 0, -120)},
 			{PrimaryEmail: "never-logged-in@example.com", LastLoginMissing: true},
+		},
+		contextAwareAccessEvents: []googleworkspace.ContextAwareAccessEvent{
+			{UserEmail: "admin1@example.com", Application: "Gmail", DeviceState: "Unmanaged"},
+			{UserEmail: "active-user@example.com", Application: "Drive"},
 		},
 	}
 
@@ -197,6 +243,12 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 	// privileged total: admin1, admin2, deleg, both = 4
 	// privileged with 2SV enforced: admin1, deleg, both = 3
 	// 3/4 = 75.0
+	if posture.Admins.PrivilegedUsersCount != 4 {
+		t.Fatalf("Admins.PrivilegedUsersCount = %d, want 4", posture.Admins.PrivilegedUsersCount)
+	}
+	if posture.Admins.PrivilegedUsers2SVEnrolledPct != 75.0 {
+		t.Fatalf("Admins.PrivilegedUsers2SVEnrolledPct = %.2f, want 75.00", posture.Admins.PrivilegedUsers2SVEnrolledPct)
+	}
 	if posture.Admins.PrivilegedUsers2SVEnforcedPct != 75.0 {
 		t.Fatalf("Admins.PrivilegedUsers2SVEnforcedPct = %.2f, want 75.00", posture.Admins.PrivilegedUsers2SVEnforcedPct)
 	}
@@ -214,6 +266,21 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 	if posture.Users.InactiveDays != DefaultInactiveDays {
 		t.Fatalf("Users.InactiveDays = %d, want %d", posture.Users.InactiveDays, DefaultInactiveDays)
 	}
+	if posture.DeviceAccess == nil {
+		t.Fatal("DeviceAccess = nil, want context-aware access evidence block")
+	}
+	if posture.DeviceAccess.LookbackDays != DefaultContextAwareAccessLookbackDays {
+		t.Fatalf("DeviceAccess.LookbackDays = %d, want %d", posture.DeviceAccess.LookbackDays, DefaultContextAwareAccessLookbackDays)
+	}
+	if posture.DeviceAccess.ContextAwareAccessDeniedEvents != 2 {
+		t.Fatalf("DeviceAccess.ContextAwareAccessDeniedEvents = %d, want 2", posture.DeviceAccess.ContextAwareAccessDeniedEvents)
+	}
+	if posture.DeviceAccess.DeviceStateDeniedEvents != 1 {
+		t.Fatalf("DeviceAccess.DeviceStateDeniedEvents = %d, want 1", posture.DeviceAccess.DeviceStateDeniedEvents)
+	}
+	if !posture.DeviceAccess.ManagedDeviceRequirementEvidenced {
+		t.Fatal("DeviceAccess.ManagedDeviceRequirementEvidenced = false, want true")
+	}
 
 	// Diagnostics should exist (report date skew warning).
 	if posture.Diagnostics == nil {
@@ -230,17 +297,29 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 			PrimaryDomain: "example.com",
 		},
 		usageReport: googleworkspace.CustomerUsageReport{
-			NumUsers:                     100,
-			NumUsers2SVEnrolled:          75,
-			NumUsers2SVEnforced:          100,
-			NumUsers2SVProtected:         70,
-			NumUsersWithPasskeysEnrolled: 10,
-			NumLockedUsers:               3,
+			NumUsers:                           100,
+			NumSuspendedUsers:                  5,
+			NumArchivedUsers:                   3,
+			NumUsers2SVEnrolled:                75,
+			NumUsers2SVEnforced:                100,
+			NumUsers2SVProtected:               70,
+			NumUsersWithPasskeysEnrolled:       10,
+			NumUsersPasswordStrengthWeak:       8,
+			NumUsersPasswordLengthNonCompliant: 4,
+			NumAuthorizedApps:                  42,
+			NumLockedUsers:                     3,
 		},
 		users: []googleworkspace.User{
+			{PrimaryEmail: "admin@example.com", IsAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "delegated@example.com", IsDelegatedAdmin: true, IsEnrolledIn2Sv: false, LastLoginTime: now},
+			{PrimaryEmail: "suspended-admin@example.com", IsAdmin: true, Suspended: true},
+			{PrimaryEmail: "archived-admin@example.com", IsDelegatedAdmin: true, Archived: true},
 			{PrimaryEmail: "active@example.com", LastLoginTime: now},
 			{PrimaryEmail: "inactive@example.com", LastLoginTime: now.AddDate(0, 0, -120)},
 			{PrimaryEmail: "never@example.com", LastLoginMissing: true},
+		},
+		contextAwareAccessEvents: []googleworkspace.ContextAwareAccessEvent{
+			{UserEmail: "active@example.com", Application: "Drive", DeviceState: "Unmanaged"},
 		},
 	}
 
@@ -272,16 +351,52 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 	if idp.UserSecurity.MFAPhishingResistantPct != 10.0 {
 		t.Fatalf("MFAPhishingResistantPct = %.2f, want 10.00", idp.UserSecurity.MFAPhishingResistantPct)
 	}
-	// inactive: 2/3 active users = 66.67%
-	if idp.UserSecurity.InactivePct != 66.67 {
-		t.Fatalf("InactivePct = %.2f, want 66.67", idp.UserSecurity.InactivePct)
+	// inactive: 2/5 active users = 40.00%
+	if idp.UserSecurity.InactivePct != 40.0 {
+		t.Fatalf("InactivePct = %.2f, want 40.00", idp.UserSecurity.InactivePct)
 	}
 	// locked: 3/100 = 3.0%
 	if idp.UserSecurity.LockedOutPct != 3.0 {
 		t.Fatalf("LockedOutPct = %.2f, want 3.00", idp.UserSecurity.LockedOutPct)
 	}
+	if idp.UserSecurity.WeakPasswordPct == nil || *idp.UserSecurity.WeakPasswordPct != 8.0 {
+		t.Fatalf("WeakPasswordPct = %v, want 8.00", idp.UserSecurity.WeakPasswordPct)
+	}
+	if idp.UserSecurity.PasswordPolicyNoncompliantPct == nil || *idp.UserSecurity.PasswordPolicyNoncompliantPct != 4.0 {
+		t.Fatalf("PasswordPolicyNoncompliantPct = %v, want 4.00", idp.UserSecurity.PasswordPolicyNoncompliantPct)
+	}
 
-	// Unsupported sections should be omitted, not faked as zero.
+	if idp.AppSecurity == nil {
+		t.Fatal("AppSecurity = nil, want authorized app count")
+	}
+	if idp.AppSecurity.AuthorizedThirdPartyAppsCount == nil || *idp.AppSecurity.AuthorizedThirdPartyAppsCount != 42 {
+		t.Fatalf("AuthorizedThirdPartyAppsCount = %v, want 42", idp.AppSecurity.AuthorizedThirdPartyAppsCount)
+	}
+	if idp.PrivilegedAccess == nil {
+		t.Fatal("PrivilegedAccess = nil, want admin posture")
+	}
+	if idp.PrivilegedAccess.PrivilegedUsersCount != 2 {
+		t.Fatalf("PrivilegedUsersCount = %d, want 2", idp.PrivilegedAccess.PrivilegedUsersCount)
+	}
+	if idp.PrivilegedAccess.SuperAdminCount != 1 {
+		t.Fatalf("SuperAdminCount = %d, want 1", idp.PrivilegedAccess.SuperAdminCount)
+	}
+	if idp.PrivilegedAccess.StandingPrivilegedUsersCount == nil || *idp.PrivilegedAccess.StandingPrivilegedUsersCount != 2 {
+		t.Fatalf("StandingPrivilegedUsersCount = %v, want 2", idp.PrivilegedAccess.StandingPrivilegedUsersCount)
+	}
+	if idp.PrivilegedAccess.PrivilegedMFACoveragePct == nil || *idp.PrivilegedAccess.PrivilegedMFACoveragePct != 50.0 {
+		t.Fatalf("PrivilegedMFACoveragePct = %v, want 50.00 based on 2SV enrollment", idp.PrivilegedAccess.PrivilegedMFACoveragePct)
+	}
+	if idp.Lifecycle == nil {
+		t.Fatal("Lifecycle = nil, want suspended/archived coverage")
+	}
+	if idp.Lifecycle.SuspendedPct == nil || *idp.Lifecycle.SuspendedPct != 5.0 {
+		t.Fatalf("SuspendedPct = %v, want 5.00", idp.Lifecycle.SuspendedPct)
+	}
+	if idp.Lifecycle.ArchivedPct == nil || *idp.Lifecycle.ArchivedPct != 3.0 {
+		t.Fatalf("ArchivedPct = %v, want 3.00", idp.Lifecycle.ArchivedPct)
+	}
+
 	data, err := json.Marshal(idp)
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
@@ -292,20 +407,34 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 
-	if _, ok := decoded["app_security"]; ok {
-		t.Fatal("idp-posture JSON should omit app_security (not available from Google Workspace APIs)")
+	if _, ok := decoded["app_security"]; !ok {
+		t.Fatal("idp-posture JSON should include app_security when authorized app count is available")
 	}
 
-	// Policy should be present when 2SV is enforced at 100%.
 	if idp.Policy == nil {
-		t.Fatal("Policy = nil, want non-nil when 2sv_enforced_pct == 100")
+		t.Fatal("Policy = nil, want non-nil when enforcement coverage is known")
 	}
 	if !idp.Policy.MFARequired {
 		t.Fatal("Policy.MFARequired = false, want true when 2sv_enforced_pct == 100")
 	}
+	if idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 100.0 {
+		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 100.00", idp.Policy.MFARequiredCoveragePct)
+	}
+	if idp.Policy.LegacyAuthBlocked == nil || !*idp.Policy.LegacyAuthBlocked {
+		t.Fatalf("Policy.LegacyAuthBlocked = %v, want true", idp.Policy.LegacyAuthBlocked)
+	}
+	if idp.DeviceAccess == nil {
+		t.Fatal("DeviceAccess = nil, want managed device evidence")
+	}
+	if idp.DeviceAccess.ManagedDeviceRequired == nil || !*idp.DeviceAccess.ManagedDeviceRequired {
+		t.Fatalf("ManagedDeviceRequired = %v, want true", idp.DeviceAccess.ManagedDeviceRequired)
+	}
+	if idp.DeviceAccess.ManagedDeviceRequiredForAdmins != nil {
+		t.Fatalf("ManagedDeviceRequiredForAdmins = %v, want nil (not inferable from current APIs)", idp.DeviceAccess.ManagedDeviceRequiredForAdmins)
+	}
 }
 
-func TestToIDPPosture_OmitsPolicyWhenEnforcementPartial(t *testing.T) {
+func TestToIDPPosture_PartialEnforcementKeepsCoverage(t *testing.T) {
 	posture := &OrgPosture{
 		CollectedAt: "2026-04-08T12:00:00Z",
 		Users:       UserMetrics{Total: 100},
@@ -316,8 +445,66 @@ func TestToIDPPosture_OmitsPolicyWhenEnforcementPartial(t *testing.T) {
 	}
 
 	idp := posture.ToIDPPosture()
-	if idp.Policy != nil {
-		t.Fatalf("Policy = %+v, want nil when enforcement < 100%%", idp.Policy)
+	if idp.Policy == nil {
+		t.Fatal("Policy = nil, want non-nil when enforcement coverage is known")
+	}
+	if idp.Policy.MFARequired {
+		t.Fatal("Policy.MFARequired = true, want false when enforcement < 100%")
+	}
+	if idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 80.0 {
+		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 80.00", idp.Policy.MFARequiredCoveragePct)
+	}
+	if idp.Policy.LegacyAuthBlocked == nil || !*idp.Policy.LegacyAuthBlocked {
+		t.Fatalf("Policy.LegacyAuthBlocked = %v, want true", idp.Policy.LegacyAuthBlocked)
+	}
+}
+
+func TestToIDPPosture_UsesUniquePrivilegedCount(t *testing.T) {
+	posture := &OrgPosture{
+		CollectedAt: "2026-04-08T12:00:00Z",
+		Users:       UserMetrics{Total: 10},
+		Admins: AdminMetrics{
+			PrivilegedUsersCount:          4,
+			SuperAdminCount:               3,
+			DelegatedAdminCount:           2,
+			PrivilegedUsers2SVEnrolledPct: 50.0,
+			PrivilegedUsers2SVEnforcedPct: 75.0,
+		},
+	}
+
+	idp := posture.ToIDPPosture()
+	if idp == nil || idp.PrivilegedAccess == nil {
+		t.Fatal("ToIDPPosture() should include privileged access when user data exists")
+	}
+	if idp.PrivilegedAccess.PrivilegedUsersCount != 4 {
+		t.Fatalf("PrivilegedUsersCount = %d, want 4 unique privileged users", idp.PrivilegedAccess.PrivilegedUsersCount)
+	}
+	if idp.PrivilegedAccess.PrivilegedMFACoveragePct == nil || *idp.PrivilegedAccess.PrivilegedMFACoveragePct != 50.0 {
+		t.Fatalf("PrivilegedMFACoveragePct = %v, want 50.0 from enrolled privileged users", idp.PrivilegedAccess.PrivilegedMFACoveragePct)
+	}
+	if idp.PrivilegedAccess.StandingPrivilegedUsersCount == nil || *idp.PrivilegedAccess.StandingPrivilegedUsersCount != 4 {
+		t.Fatalf("StandingPrivilegedUsersCount = %v, want 4", idp.PrivilegedAccess.StandingPrivilegedUsersCount)
+	}
+}
+
+func TestToIDPPosture_OmitsDeviceAccessWithoutPositiveEvidence(t *testing.T) {
+	posture := &OrgPosture{
+		CollectedAt: "2026-04-08T12:00:00Z",
+		Users:       UserMetrics{Total: 10},
+		DeviceAccess: &DeviceAccessMetrics{
+			LookbackDays:                      DefaultContextAwareAccessLookbackDays,
+			ContextAwareAccessDeniedEvents:    3,
+			DeviceStateDeniedEvents:           0,
+			ManagedDeviceRequirementEvidenced: false,
+		},
+	}
+
+	idp := posture.ToIDPPosture()
+	if idp == nil {
+		t.Fatal("ToIDPPosture() = nil, want non-nil")
+	}
+	if idp.DeviceAccess != nil {
+		t.Fatalf("DeviceAccess = %+v, want nil without device-state evidence", idp.DeviceAccess)
 	}
 }
 
@@ -363,6 +550,179 @@ func TestCollect_WarnsWhenUsageReportEmpty(t *testing.T) {
 	}
 }
 
+func TestCollect_ContextAwareAccessErrorDoesNotFailCollection(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+
+	client := &mockClient{
+		customer: googleworkspace.Customer{
+			ID:            "C123",
+			PrimaryDomain: "example.com",
+		},
+		usageReport: googleworkspace.CustomerUsageReport{NumUsers: 10},
+		users: []googleworkspace.User{
+			{PrimaryEmail: "user@example.com", LastLoginTime: now},
+		},
+		contextAwareAccessErr: errors.New("audit scope missing"),
+	}
+
+	c := NewWithClient(Config{
+		AdminEmail: "admin@example.com",
+		Now:        func() time.Time { return now },
+	}, client)
+
+	posture, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if posture.DeviceAccess != nil {
+		t.Fatalf("DeviceAccess = %+v, want nil when audit scan fails", posture.DeviceAccess)
+	}
+	if posture.Diagnostics == nil {
+		t.Fatal("Diagnostics = nil, want warning about omitted device access posture")
+	}
+
+	found := false
+	for _, warning := range posture.Diagnostics.Warnings {
+		if warning == "context-aware access audit scan failed; device access posture omitted: audit scope missing" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %#v, want context-aware access warning", posture.Diagnostics.Warnings)
+	}
+
+	idp := posture.ToIDPPosture()
+	if idp == nil {
+		t.Fatal("ToIDPPosture() = nil, want non-nil")
+	}
+	if idp.DeviceAccess != nil {
+		t.Fatalf("DeviceAccess = %+v, want nil when managed-device evidence is unavailable", idp.DeviceAccess)
+	}
+}
+
+func TestCollect_AccessContextManagerEnrichment(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+
+	client := &mockClient{
+		customer: googleworkspace.Customer{
+			ID:            "C123",
+			PrimaryDomain: "example.com",
+		},
+		usageReport: googleworkspace.CustomerUsageReport{NumUsers: 10},
+		users: []googleworkspace.User{
+			{PrimaryEmail: "user@example.com", LastLoginTime: now},
+		},
+		contextAwareAccessEvents: []googleworkspace.ContextAwareAccessEvent{
+			{UserEmail: "user@example.com", Application: "Drive", DeviceState: "Unmanaged"},
+		},
+		accessLevels: []googleworkspace.AccessLevel{
+			{
+				Name:                          "accessPolicies/111/accessLevels/device_trust",
+				Title:                         "Device Trust",
+				HasDevicePolicy:               true,
+				AllowedDeviceManagementLevels: []string{"BASIC", "COMPLETE"},
+				RequiresScreenlock:            true,
+			},
+			{
+				Name:   "accessPolicies/111/accessLevels/custom_expr",
+				Title:  "Custom Expr",
+				Custom: true,
+			},
+		},
+	}
+
+	c := NewWithClient(Config{
+		AdminEmail:   "admin@example.com",
+		AccessPolicy: "111",
+		Now:          func() time.Time { return now },
+	}, client)
+
+	posture, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if client.lastAccessLevelsPolicy != "accessPolicies/111" {
+		t.Fatalf("lastAccessLevelsPolicy = %q, want accessPolicies/111", client.lastAccessLevelsPolicy)
+	}
+	if posture.DeviceAccess == nil || posture.DeviceAccess.AccessContextManager == nil {
+		t.Fatal("DeviceAccess.AccessContextManager = nil, want ACM summary")
+	}
+	acm := posture.DeviceAccess.AccessContextManager
+	if acm.AccessPolicyName != "accessPolicies/111" {
+		t.Fatalf("AccessPolicyName = %q, want accessPolicies/111", acm.AccessPolicyName)
+	}
+	if acm.BasicAccessLevelsCount != 1 {
+		t.Fatalf("BasicAccessLevelsCount = %d, want 1", acm.BasicAccessLevelsCount)
+	}
+	if acm.CustomAccessLevelsCount != 1 {
+		t.Fatalf("CustomAccessLevelsCount = %d, want 1", acm.CustomAccessLevelsCount)
+	}
+	if acm.BasicDevicePolicyAccessLevelsCount != 1 {
+		t.Fatalf("BasicDevicePolicyAccessLevelsCount = %d, want 1", acm.BasicDevicePolicyAccessLevelsCount)
+	}
+	if acm.BasicManagedDeviceAccessLevelsCount != 1 {
+		t.Fatalf("BasicManagedDeviceAccessLevelsCount = %d, want 1", acm.BasicManagedDeviceAccessLevelsCount)
+	}
+	if len(acm.BasicDevicePolicyAccessLevelTitles) != 1 || acm.BasicDevicePolicyAccessLevelTitles[0] != "Device Trust" {
+		t.Fatalf("BasicDevicePolicyAccessLevelTitles = %#v, want [\"Device Trust\"]", acm.BasicDevicePolicyAccessLevelTitles)
+	}
+
+	foundCustomWarning := false
+	for _, warning := range posture.Diagnostics.Warnings {
+		if warning == "access context manager includes 1 custom access levels; device-policy summary only analyzes basic access levels" {
+			foundCustomWarning = true
+			break
+		}
+	}
+	if !foundCustomWarning {
+		t.Fatalf("warnings = %#v, want custom-level ACM warning", posture.Diagnostics.Warnings)
+	}
+}
+
+func TestCollect_ResolvesAccessPolicyFromOrganizationID(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+
+	client := &mockClient{
+		customer: googleworkspace.Customer{
+			ID:            "C123",
+			PrimaryDomain: "example.com",
+		},
+		usageReport: googleworkspace.CustomerUsageReport{NumUsers: 10},
+		users: []googleworkspace.User{
+			{PrimaryEmail: "user@example.com", LastLoginTime: now},
+		},
+		accessPolicies: []googleworkspace.AccessPolicy{
+			{Name: "accessPolicies/222", Parent: "organizations/999999", Title: "Corp policy"},
+		},
+	}
+
+	c := NewWithClient(Config{
+		AdminEmail:     "admin@example.com",
+		OrganizationID: "999999",
+		Now:            func() time.Time { return now },
+	}, client)
+
+	posture, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if client.lastAccessPolicyParent != "organizations/999999" {
+		t.Fatalf("lastAccessPolicyParent = %q, want organizations/999999", client.lastAccessPolicyParent)
+	}
+	if client.lastAccessLevelsPolicy != "accessPolicies/222" {
+		t.Fatalf("lastAccessLevelsPolicy = %q, want accessPolicies/222", client.lastAccessLevelsPolicy)
+	}
+	if posture.DeviceAccess == nil || posture.DeviceAccess.AccessContextManager == nil {
+		t.Fatal("DeviceAccess.AccessContextManager = nil, want resolved ACM summary")
+	}
+	if posture.DeviceAccess.AccessContextManager.AccessPolicyName != "accessPolicies/222" {
+		t.Fatalf("AccessPolicyName = %q, want accessPolicies/222", posture.DeviceAccess.AccessContextManager.AccessPolicyName)
+	}
+}
+
 func TestCollect_UsesConfiguredCustomerKey(t *testing.T) {
 	client := &mockClient{
 		customer: googleworkspace.Customer{
@@ -396,8 +756,8 @@ func TestCollect_AdminDenominatorExcludesSuspendedArchived(t *testing.T) {
 		},
 		usageReport: googleworkspace.CustomerUsageReport{NumUsers: 10},
 		users: []googleworkspace.User{
-			{PrimaryEmail: "active-admin@example.com", IsAdmin: true, IsEnforcedIn2Sv: true},
-			{PrimaryEmail: "suspended-admin@example.com", IsAdmin: true, Suspended: true, IsEnforcedIn2Sv: true},
+			{PrimaryEmail: "active-admin@example.com", IsAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true},
+			{PrimaryEmail: "suspended-admin@example.com", IsAdmin: true, Suspended: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true},
 			{PrimaryEmail: "archived-deleg@example.com", IsDelegatedAdmin: true, Archived: true},
 		},
 	}
@@ -417,6 +777,12 @@ func TestCollect_AdminDenominatorExcludesSuspendedArchived(t *testing.T) {
 	}
 	if posture.Admins.DelegatedAdminCount != 0 {
 		t.Fatalf("DelegatedAdminCount = %d, want 0 (archived excluded)", posture.Admins.DelegatedAdminCount)
+	}
+	if posture.Admins.PrivilegedUsersCount != 1 {
+		t.Fatalf("PrivilegedUsersCount = %d, want 1 (only active admin remains)", posture.Admins.PrivilegedUsersCount)
+	}
+	if posture.Admins.PrivilegedUsers2SVEnrolledPct != 100.0 {
+		t.Fatalf("PrivilegedUsers2SVEnrolledPct = %.2f, want 100.00", posture.Admins.PrivilegedUsers2SVEnrolledPct)
 	}
 	if posture.Admins.PrivilegedUsers2SVEnforcedPct != 100.0 {
 		t.Fatalf("PrivilegedUsers2SVEnforcedPct = %.2f, want 100.00", posture.Admins.PrivilegedUsers2SVEnforcedPct)

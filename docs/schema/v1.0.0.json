@@ -148,11 +148,18 @@
     "admins": {
       "type": "object",
       "required": [
+        "privileged_users_count",
         "super_admin_count",
         "delegated_admin_count",
+        "privileged_users_2sv_enrolled_pct",
         "privileged_users_2sv_enforced_pct"
       ],
       "properties": {
+        "privileged_users_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of unique active privileged users across super admin and delegated admin roles."
+        },
         "super_admin_count": {
           "type": "integer",
           "minimum": 0,
@@ -162,6 +169,12 @@
           "type": "integer",
           "minimum": 0,
           "description": "Number of active delegated administrators."
+        },
+        "privileged_users_2sv_enrolled_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of active privileged users enrolled in 2-step verification."
         },
         "privileged_users_2sv_enforced_pct": {
           "type": "number",
@@ -199,6 +212,83 @@
           "type": "integer",
           "minimum": 0,
           "description": "Number of third-party apps authorized in the tenant."
+        }
+      },
+      "additionalProperties": false
+    },
+    "device_access": {
+      "type": "object",
+      "required": [
+        "lookback_days",
+        "context_aware_access_denied_events",
+        "device_state_denied_events",
+        "managed_device_requirement_evidenced"
+      ],
+      "properties": {
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of days of Context-Aware Access audit history searched for device-state deny events."
+        },
+        "context_aware_access_denied_events": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total Context-Aware Access deny events observed in the lookback window."
+        },
+        "device_state_denied_events": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of deny events that included a device-state parameter, which is positive evidence that a device-state access level fired."
+        },
+        "managed_device_requirement_evidenced": {
+          "type": "boolean",
+          "description": "Whether Context-Aware Access audit logs show device-state-based access denials. This is deny-event evidence, not proof of complete policy coverage."
+        },
+        "access_context_manager": {
+          "type": "object",
+          "required": [
+            "access_policy_name",
+            "basic_access_levels_count",
+            "custom_access_levels_count",
+            "basic_device_policy_access_levels_count",
+            "basic_managed_device_access_levels_count"
+          ],
+          "properties": {
+            "access_policy_name": {
+              "type": "string",
+              "description": "Access Context Manager policy resource used for config enrichment."
+            },
+            "access_policy_parent": {
+              "type": "string",
+              "description": "Parent organization resource for the access policy."
+            },
+            "basic_access_levels_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of basic Access Context Manager access levels in the resolved policy."
+            },
+            "custom_access_levels_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of custom CEL-based access levels in the resolved policy. These are not deeply analyzed by the collector."
+            },
+            "basic_device_policy_access_levels_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of basic access levels that include a devicePolicy condition."
+            },
+            "basic_managed_device_access_levels_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of basic device-policy access levels that explicitly restrict allowed device management levels to managed devices."
+            },
+            "basic_device_policy_access_level_titles": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Titles of basic access levels that include a devicePolicy condition."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
