@@ -153,6 +153,12 @@ func (c *Collector) Collect(ctx context.Context) (*OrgPosture, error) {
 	posture.Admins = userScan.admins
 	posture.Users.InactivePct = percentFloat(userScan.inactiveCount, userScan.activeCount)
 
+	report2SVEnforcedPct := posture.Authentication.TwoSVEnforcedPct
+	posture.Authentication.TwoSVEnforcedPct = percentFloat(userScan.enforced2SVCount, userScan.activeCount)
+	if math.Abs(report2SVEnforcedPct-posture.Authentication.TwoSVEnforcedPct) >= 1 {
+		c.warn("2SV enforcement coverage differs between the lagged usage report (%.2f%%) and live Directory user flags (%.2f%%); using the live Directory value", report2SVEnforcedPct, posture.Authentication.TwoSVEnforcedPct)
+	}
+
 	// Step 4: Query Context-Aware Access deny events for evidence that Google
 	// evaluated device-state conditions for tenant access. These logs are
 	// deny-only and can include monitor-mode hits, so they are a useful positive
@@ -184,7 +190,7 @@ func (c *Collector) Collect(ctx context.Context) (*OrgPosture, error) {
 		}
 	}
 
-	c.warn("usage report metrics are as of %s; admin counts and inactivity reflect current Directory state and may differ slightly", reportDate)
+	c.warn("usage report metrics are as of %s; 2SV enforcement, admin counts, and inactivity reflect current Directory state and may differ slightly", reportDate)
 	posture.Diagnostics = c.diagnostics()
 
 	c.status("Collection complete")
@@ -192,9 +198,10 @@ func (c *Collector) Collect(ctx context.Context) (*OrgPosture, error) {
 }
 
 type userScanResult struct {
-	admins        AdminMetrics
-	activeCount   int
-	inactiveCount int
+	admins           AdminMetrics
+	activeCount      int
+	inactiveCount    int
+	enforced2SVCount int
 }
 
 type deviceAccessScanResult struct {
@@ -215,6 +222,7 @@ func (c *Collector) scanUsers(ctx context.Context, customerKey string, inactiveT
 		privileged2SVEnforced int
 		activeCount           int
 		inactiveCount         int
+		enforced2SVCount      int
 		processed             int64
 	)
 
@@ -229,6 +237,9 @@ func (c *Collector) scanUsers(ctx context.Context, customerKey string, inactiveT
 				continue
 			}
 			activeCount++
+			if user.IsEnforcedIn2Sv {
+				enforced2SVCount++
+			}
 
 			// Inactivity: never logged in or last login before threshold.
 			if user.LastLoginMissing || user.LastLoginTime.Before(inactiveThreshold) {
@@ -269,8 +280,9 @@ func (c *Collector) scanUsers(ctx context.Context, customerKey string, inactiveT
 			PrivilegedUsers2SVEnrolledPct: percentFloat(privileged2SVEnrolled, privilegedTotal),
 			PrivilegedUsers2SVEnforcedPct: percentFloat(privileged2SVEnforced, privilegedTotal),
 		},
-		activeCount:   activeCount,
-		inactiveCount: inactiveCount,
+		activeCount:      activeCount,
+		inactiveCount:    inactiveCount,
+		enforced2SVCount: enforced2SVCount,
 	}, nil
 }
 

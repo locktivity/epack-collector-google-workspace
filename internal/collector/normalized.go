@@ -1,5 +1,7 @@
 package collector
 
+import "math"
+
 // IDPPosture represents the normalized identity provider posture.
 // This follows the evidencepack/idp-posture@v1 schema specification.
 // Fields are designed to be vendor-agnostic (works for Okta, Ping, Entra, etc.).
@@ -102,6 +104,7 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		return nil
 	}
 
+	mfaCoveragePct := math.Max(o.Authentication.TwoSVProtectedPct, o.Authentication.PasskeyUsersPct)
 	weakPasswordPct := o.Passwords.WeakPasswordPct
 	passwordPolicyNoncompliantPct := o.Passwords.PasswordLengthNonCompliantPct
 	privilegedMFACoveragePct := o.Admins.PrivilegedUsers2SVEnrolledPct
@@ -118,7 +121,7 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		Provider:      "google_workspace",
 		OrgDomain:     o.OrgDomain,
 		UserSecurity: IDPPostureUserSecurity{
-			MFACoveragePct:                o.Authentication.TwoSVProtectedPct,
+			MFACoveragePct:                mfaCoveragePct,
 			MFAPhishingResistantPct:       o.Authentication.PasskeyUsersPct,
 			InactivePct:                   o.Users.InactivePct,
 			LockedOutPct:                  o.Users.LockedPct,

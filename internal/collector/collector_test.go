@@ -205,8 +205,8 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 	if posture.Authentication.TwoSVEnrolledPct != 75.0 {
 		t.Fatalf("Authentication.TwoSVEnrolledPct = %.2f, want 75.00", posture.Authentication.TwoSVEnrolledPct)
 	}
-	if posture.Authentication.TwoSVEnforcedPct != 60.0 {
-		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 60.00", posture.Authentication.TwoSVEnforcedPct)
+	if posture.Authentication.TwoSVEnforcedPct != 42.86 {
+		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 42.86 from live Directory enforcement", posture.Authentication.TwoSVEnforcedPct)
 	}
 	if posture.Authentication.TwoSVProtectedPct != 70.0 {
 		t.Fatalf("Authentication.TwoSVProtectedPct = %.2f, want 70.00", posture.Authentication.TwoSVProtectedPct)
@@ -343,10 +343,11 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 	if idp.OrgDomain != "example.com" {
 		t.Fatalf("OrgDomain = %q, want example.com", idp.OrgDomain)
 	}
-	// MFACoveragePct maps from 2sv_protected_pct (effective coverage), not enrolled.
-	// 70/100 = 70.0%
+	// MFACoveragePct uses effective strong-auth coverage. For classic 2SV tenants
+	// this still maps to 2sv_protected_pct; passkey-first tenants can exceed it.
+	// max(70, 10) = 70.0%
 	if idp.UserSecurity.MFACoveragePct != 70.0 {
-		t.Fatalf("MFACoveragePct = %.2f, want 70.00 (derived from 2sv_protected_pct)", idp.UserSecurity.MFACoveragePct)
+		t.Fatalf("MFACoveragePct = %.2f, want 70.00 (derived from effective strong-auth coverage)", idp.UserSecurity.MFACoveragePct)
 	}
 	if idp.UserSecurity.MFAPhishingResistantPct != 10.0 {
 		t.Fatalf("MFAPhishingResistantPct = %.2f, want 10.00", idp.UserSecurity.MFAPhishingResistantPct)
@@ -414,11 +415,11 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 	if idp.Policy == nil {
 		t.Fatal("Policy = nil, want non-nil when enforcement coverage is known")
 	}
-	if !idp.Policy.MFARequired {
-		t.Fatal("Policy.MFARequired = false, want true when 2sv_enforced_pct == 100")
+	if idp.Policy.MFARequired {
+		t.Fatal("Policy.MFARequired = true, want false when live active-user enforcement is below 100%")
 	}
-	if idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 100.0 {
-		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 100.00", idp.Policy.MFARequiredCoveragePct)
+	if idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 20.0 {
+		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 20.00 from live Directory enforcement", idp.Policy.MFARequiredCoveragePct)
 	}
 	if idp.Policy.LegacyAuthBlocked == nil || !*idp.Policy.LegacyAuthBlocked {
 		t.Fatalf("Policy.LegacyAuthBlocked = %v, want true", idp.Policy.LegacyAuthBlocked)
@@ -456,6 +457,84 @@ func TestToIDPPosture_PartialEnforcementKeepsCoverage(t *testing.T) {
 	}
 	if idp.Policy.LegacyAuthBlocked == nil || !*idp.Policy.LegacyAuthBlocked {
 		t.Fatalf("Policy.LegacyAuthBlocked = %v, want true", idp.Policy.LegacyAuthBlocked)
+	}
+}
+
+func TestToIDPPosture_UsesPasskeyCoverageForPasswordlessTenants(t *testing.T) {
+	posture := &OrgPosture{
+		CollectedAt: "2026-04-22T17:41:13Z",
+		Users:       UserMetrics{Total: 6},
+		Authentication: AuthMetrics{
+			TwoSVEnrolledPct:  0,
+			TwoSVEnforcedPct:  0,
+			TwoSVProtectedPct: 0,
+			PasskeyUsersPct:   100,
+		},
+	}
+
+	idp := posture.ToIDPPosture()
+	if idp == nil {
+		t.Fatal("ToIDPPosture() = nil, want non-nil")
+	}
+	if idp.UserSecurity.MFACoveragePct != 100.0 {
+		t.Fatalf("MFACoveragePct = %.2f, want 100.00 from passkey-first coverage", idp.UserSecurity.MFACoveragePct)
+	}
+	if idp.Policy == nil || idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 0.0 {
+		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 0.00 when classic 2SV enforcement is not configured", idp.Policy.MFARequiredCoveragePct)
+	}
+}
+
+func TestCollect_UsesLiveDirectoryEnforcementForTenantCoverage(t *testing.T) {
+	now := time.Date(2026, 4, 22, 17, 41, 13, 0, time.UTC)
+
+	client := &mockClient{
+		customer: googleworkspace.Customer{
+			ID:            "C123",
+			PrimaryDomain: "example.com",
+		},
+		usageReport: googleworkspace.CustomerUsageReport{
+			Date:                         "2026-04-20",
+			NumUsers:                     6,
+			NumUsers2SVEnforced:          0,
+			NumUsers2SVProtected:         0,
+			NumUsersWithPasskeysEnrolled: 100,
+		},
+		users: []googleworkspace.User{
+			{PrimaryEmail: "admin1@example.com", IsAdmin: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "admin2@example.com", IsAdmin: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user1@example.com", IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user2@example.com", IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user3@example.com", IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user4@example.com", IsEnforcedIn2Sv: true, LastLoginTime: now},
+		},
+	}
+
+	c := NewWithClient(Config{
+		AdminEmail: "admin@example.com",
+		Now:        func() time.Time { return now },
+	}, client)
+
+	posture, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if posture.Authentication.TwoSVEnforcedPct != 100.0 {
+		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 100.00 from live Directory enforcement", posture.Authentication.TwoSVEnforcedPct)
+	}
+
+	idp := posture.ToIDPPosture()
+	if idp == nil || idp.Policy == nil || idp.Policy.MFARequiredCoveragePct == nil {
+		t.Fatal("ToIDPPosture() should include policy enforcement coverage")
+	}
+	if !idp.Policy.MFARequired {
+		t.Fatal("Policy.MFARequired = false, want true when live active-user enforcement is 100%")
+	}
+	if *idp.Policy.MFARequiredCoveragePct != 100.0 {
+		t.Fatalf("Policy.MFARequiredCoveragePct = %.2f, want 100.00", *idp.Policy.MFARequiredCoveragePct)
+	}
+	if posture.Diagnostics == nil || len(posture.Diagnostics.Warnings) == 0 {
+		t.Fatal("Diagnostics = nil, want live-vs-report mismatch warning")
 	}
 }
 
