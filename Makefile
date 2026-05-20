@@ -1,4 +1,4 @@
-.PHONY: build test lint clean sdk-test sdk-run
+.PHONY: build test lint lint-forbidden-data clean sdk-test sdk-run
 
 BINARY_NAME := epack-collector-google-workspace
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -26,8 +26,14 @@ GOLANGCI_LINT := ./bin/golangci-lint
 $(GOLANGCI_LINT):
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b ./bin $(GOLANGCI_LINT_VERSION)
 
-lint: $(GOLANGCI_LINT)
+lint: $(GOLANGCI_LINT) lint-forbidden-data
 	$(GOLANGCI_LINT) run ./...
+
+# Fail the build if collector source references forbidden Google Workspace data
+# (message/file/calendar/chat content, profile attributes beyond primary email,
+# device serials/IMEIs, OAuth token values, SSO signing material, Vault contents).
+lint-forbidden-data:
+	./scripts/check-forbidden-data.sh
 
 # Clean build artifacts
 clean:

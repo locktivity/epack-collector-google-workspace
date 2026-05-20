@@ -7,7 +7,7 @@ stream: myorg/google-workspace-posture
 
 collectors:
   google-workspace:
-    source: locktivity/epack-collector-google-workspace@^0.1
+    source: locktivity/epack-collector-google-workspace@^0.2
     config:
       admin_email: admin@example.com
     secrets:
@@ -30,7 +30,7 @@ If your service account has access to a specific Google Workspace tenant, set th
 ```yaml
 collectors:
   google-workspace:
-    source: locktivity/epack-collector-google-workspace@^0.1
+    source: locktivity/epack-collector-google-workspace@^0.2
     config:
       customer: C0123abc
       organization_id: "987654321"
@@ -184,7 +184,7 @@ If a single service account has domain-wide delegation across tenants, use the `
 # epack-prod.yaml
 collectors:
   google-workspace:
-    source: locktivity/epack-collector-google-workspace@^0.1
+    source: locktivity/epack-collector-google-workspace@^0.2
     config:
       customer: C0abc123
       admin_email: admin@company.com
@@ -196,7 +196,7 @@ collectors:
 # epack-subsidiary.yaml
 collectors:
   google-workspace:
-    source: locktivity/epack-collector-google-workspace@^0.1
+    source: locktivity/epack-collector-google-workspace@^0.2
     config:
       customer: C0def456
       admin_email: admin@subsidiary.com
