@@ -7,6 +7,7 @@
   "required": [
     "schema_version",
     "collected_at",
+    "collected_at_level",
     "usage_report_date",
     "provider",
     "org_domain",
@@ -27,6 +28,11 @@
       "type": "string",
       "format": "date-time",
       "description": "Timestamp when the collector ran."
+    },
+    "collected_at_level": {
+      "type": "string",
+      "enum": ["trust", "audit", "internal"],
+      "description": "Collection level the artifact was produced at. Audit and internal additions are strictly additive; the schema version stays 1.0.0 (the collector binary version carries the level-aware signal)."
     },
     "usage_report_date": {
       "type": "string",
@@ -80,6 +86,20 @@
           "type": "integer",
           "minimum": 0,
           "description": "Inactivity threshold in days."
+        },
+        "inventory": {
+          "type": "array",
+          "description": "Per-user inventory (audit and above). Each row carries primary_email, status, org_unit_path, 2sv flags, and activity flags; internal adds last_login_at. Per-user passkey / password strength are not available per user.",
+          "items": { "type": "object", "additionalProperties": true }
+        },
+        "truncated_inventory": {
+          "type": "boolean",
+          "description": "True when the per-user inventory was capped (50,000 rows, ACTIVE-first then email ascending). Omitted when within the cap."
+        },
+        "truncated_inventory_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of user inventory rows dropped by the cap. Omitted when within the cap."
         }
       },
       "additionalProperties": false
@@ -181,6 +201,16 @@
           "minimum": 0,
           "maximum": 100,
           "description": "Percentage of active privileged users with 2-step verification enforced."
+        },
+        "inventory": {
+          "type": "array",
+          "description": "Per-privileged-user inventory (audit and above): primary_email, super/delegated flags, 2sv flags, role names; internal adds the org_unit_scoped flag.",
+          "items": { "type": "object", "additionalProperties": true }
+        },
+        "custom_roles": {
+          "type": "array",
+          "description": "Admin-defined (non-system) custom roles (audit and above): name, description, privilege_count.",
+          "items": { "type": "object", "additionalProperties": true }
         }
       },
       "additionalProperties": false
@@ -286,6 +316,11 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Titles of basic access levels that include a devicePolicy condition."
+            },
+            "levels": {
+              "type": "array",
+              "description": "Per-access-level rows (audit and above): title, custom flag, device-policy summary. Internal adds rule details (IP subnetworks, regions, required access levels, allowed device-management and encryption statuses).",
+              "items": { "type": "object", "additionalProperties": true }
             }
           },
           "additionalProperties": false
@@ -293,13 +328,63 @@
       },
       "additionalProperties": false
     },
+    "groups": {
+      "type": "object",
+      "description": "Groups surface (audit and above; omitted at trust). Audit: total / admin_created / user_created counts, external_members_allowed count, plus the per-group inventory (email, name, member_count, settings); truncated_inventory / truncated_inventory_dropped report the 10,000-group cap. Internal: per-group member lists (bounded by a 200k total-row cap; truncated_group_memberships flags that cap).",
+      "additionalProperties": true
+    },
+    "org_units": {
+      "type": "object",
+      "description": "Org-unit surface (audit and above; omitted at trust). Audit: total, max_depth, and the per-OU inventory with user_count and the block_inheritance policy-override flag.",
+      "additionalProperties": true
+    },
+    "endpoint": {
+      "type": "object",
+      "description": "Managed-device surface (mobile + Chrome OS; audit and above, omitted at trust). Audit: counts by OS, not_synced_30d, and per-OS compliant / non-compliant breakdowns. Internal: per-device rows (no serial numbers or IMEIs).",
+      "additionalProperties": true
+    },
+    "drive_external_sharing": {
+      "type": "object",
+      "description": "Drive external-sharing audit. Audit: external-share and public-on-web event counts over 30 days. Internal: an event slice over 7 days with file_id, sharer_email, recipient_domain (domain only, never the full address), and target_role.",
+      "additionalProperties": true
+    },
+    "admin_audit_log": {
+      "type": "object",
+      "description": "Security-relevant admin actions over 7 days. Audit: counts by category. Internal: the event slice (no debug-context payloads).",
+      "additionalProperties": true
+    },
+    "login_audit_log": {
+      "type": "object",
+      "description": "Suspicious / failed logins over 7 days. Audit: counts. Internal: the event slice with IP for forensic correlation (no geolocation).",
+      "additionalProperties": true
+    },
+    "oauth_tokens": {
+      "type": "object",
+      "description": "OAuth token audit over 7 days (audit and above; omitted at trust). Audit: issuance counts plus counts by app and by scope sensitivity. Internal: per-token grants with scopes (token values are never available via the API).",
+      "additionalProperties": true
+    },
+    "domain_settings": {
+      "type": "object",
+      "description": "Domain + SSO (audit and above; omitted at trust). Audit: sso_configured flag, SAML-profile and verified-domain counts, plus per-profile and per-domain inventories. Internal: SSO service host (host only; never the full URL, signing certs, or metadata XML).",
+      "additionalProperties": true
+    },
+    "vault": {
+      "type": "object",
+      "description": "Vault eDiscovery (audit and above; omitted at trust). Audit: licensed flag, matter / hold counts, and per-matter summaries. Internal: per-hold metadata (never the search query or hold contents). Absent license degrades to licensed=false.",
+      "additionalProperties": true
+    },
     "diagnostics": {
       "type": "object",
       "properties": {
+        "permission_errors": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Surfaces skipped because an OAuth scope or admin role is missing (a permission the customer can grant)."
+        },
         "warnings": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Informational warnings about data gaps or caveats."
+          "description": "Informational warnings about data gaps or caveats (licensing, report lag, truncation)."
         }
       },
       "additionalProperties": false

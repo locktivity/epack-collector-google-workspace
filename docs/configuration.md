@@ -8,7 +8,21 @@ The collector uses a Google service account with domain-wide delegation. This is
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create or select a project for the collector
-3. Go to **APIs & Services > Enabled APIs** and enable the **Admin SDK API**
+3. Go to **APIs & Services > Enabled APIs** and enable the APIs the collector
+   calls. These are separate from the OAuth scopes in Step 5: a granted scope
+   still fails with `SERVICE_DISABLED` if the API isn't enabled in this project.
+
+   | API | Needed for |
+   |---|---|
+   | **Admin SDK API** (`admin.googleapis.com`) | All levels (users, reports, and at audit+ groups, org units, devices, domains, roles) |
+   | **Groups Settings API** (`groupssettings.googleapis.com`) | audit / internal: per-group external-members and who-can-* settings |
+   | **Cloud Identity API** (`cloudidentity.googleapis.com`) | audit / internal: SAML SSO profiles |
+   | **Google Vault API** (`vault.googleapis.com`) | audit / internal: Vault matters / holds (also needs a Vault license) |
+   | **Access Context Manager API** (`accesscontextmanager.googleapis.com`) | Optional `device_access` enrichment (when `organization_id` / `access_policy` is set) |
+
+   For a trust-only run, the Admin SDK API is sufficient. The other APIs are
+   only called at audit / internal; a disabled one degrades just that surface
+   (a diagnostic names the API, the rest of the run continues).
 
 ### Step 2: Create a Service Account
 

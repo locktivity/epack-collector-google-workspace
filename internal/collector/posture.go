@@ -10,6 +10,29 @@ const (
 	// DefaultContextAwareAccessLookbackDays is the audit lookback window used
 	// to search for Context-Aware Access deny events that cite device state.
 	DefaultContextAwareAccessLookbackDays = 90
+
+	// UsersCap bounds the per-user inventory at audit / internal for very large
+	// orgs. On cap-hit, rows sort ACTIVE-first then email ascending.
+	UsersCap = 50000
+	// GroupsCap bounds the per-group inventory; on cap-hit rows sort by member
+	// count descending.
+	GroupsCap = 10000
+	// GroupMembershipsCap bounds the total membership rows across all groups at
+	// internal (not per group).
+	GroupMembershipsCap = 200000
+	// EndpointDevicesCap bounds the per-device inventory (mobile + Chrome OS
+	// combined); on cap-hit rows sort by last sync descending.
+	EndpointDevicesCap = 5000
+	// AuditEventsCap bounds each audit-log event slice (admin / login / drive
+	// external sharing / oauth tokens); on cap-hit rows sort by timestamp
+	// descending.
+	AuditEventsCap = 5000
+	// DriveExternalSharingWindowDays is the audit-count window (30d); the
+	// internal event slice uses a tighter 7d window.
+	DriveExternalSharingCountDays = 30
+	// AuditLogWindowDays is the lookback window for the security-relevant
+	// audit-log surfaces.
+	AuditLogWindowDays = 7
 )
 
 // StatusFunc reports indeterminate progress.
@@ -33,30 +56,298 @@ type Config struct {
 
 // OrgPosture is the detailed Google Workspace posture artifact.
 type OrgPosture struct {
-	SchemaVersion   string               `json:"schema_version"`
-	CollectedAt     string               `json:"collected_at"`
-	UsageReportDate string               `json:"usage_report_date"`
-	Provider        string               `json:"provider"`
-	OrgDomain       string               `json:"org_domain"`
-	CustomerID      string               `json:"customer_id"`
-	Users           UserMetrics          `json:"users"`
-	Activity        ActivityMetrics      `json:"activity"`
-	Authentication  AuthMetrics          `json:"authentication"`
-	Admins          AdminMetrics         `json:"admins"`
-	Passwords       PasswordMetrics      `json:"passwords"`
-	Apps            AppMetrics           `json:"apps"`
-	DeviceAccess    *DeviceAccessMetrics `json:"device_access,omitempty"`
-	Diagnostics     *Diagnostics         `json:"diagnostics,omitempty"`
+	SchemaVersion    string               `json:"schema_version"`
+	CollectedAt      string               `json:"collected_at"`
+	CollectedAtLevel string               `json:"collected_at_level"`
+	UsageReportDate  string               `json:"usage_report_date"`
+	Provider         string               `json:"provider"`
+	OrgDomain        string               `json:"org_domain"`
+	CustomerID       string               `json:"customer_id"`
+	Users            UserMetrics          `json:"users"`
+	Activity         ActivityMetrics      `json:"activity"`
+	Authentication   AuthMetrics          `json:"authentication"`
+	Admins           AdminMetrics         `json:"admins"`
+	Passwords        PasswordMetrics      `json:"passwords"`
+	Apps             AppMetrics           `json:"apps"`
+	DeviceAccess     *DeviceAccessMetrics `json:"device_access,omitempty"`
+
+	// New surfaces (audit / internal scope expansion). Each is a pointer with
+	// omitempty so trust-level output omits them entirely.
+	Groups               *Groups               `json:"groups,omitempty"`
+	OrgUnits             *OrgUnits             `json:"org_units,omitempty"`
+	Endpoint             *Endpoint             `json:"endpoint,omitempty"`
+	DriveExternalSharing *DriveExternalSharing `json:"drive_external_sharing,omitempty"`
+	AdminAuditLog        *AdminAuditLog        `json:"admin_audit_log,omitempty"`
+	LoginAuditLog        *LoginAuditLog        `json:"login_audit_log,omitempty"`
+	OAuthTokens          *OAuthTokens          `json:"oauth_tokens,omitempty"`
+	DomainSettings       *DomainSettings       `json:"domain_settings,omitempty"`
+	Vault                *Vault                `json:"vault,omitempty"`
+
+	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
 }
 
-// UserMetrics contains user population counts.
+// Vault is the eDiscovery surface. Trust emits the licensed flag plus matter /
+// hold counts; audit adds per-matter summaries; internal adds per-hold
+// metadata. Hold search queries and contents are never emitted.
+type Vault struct {
+	Licensed     bool                 `json:"licensed"`
+	MattersCount int                  `json:"matters_count"`
+	HoldsCount   int                  `json:"holds_count"`
+	Matters      []VaultMatterSummary `json:"matters,omitempty"`
+	Holds        []VaultHoldSummary   `json:"holds,omitempty"`
+}
+
+// VaultMatterSummary is a per-matter row (audit and above).
+type VaultMatterSummary struct {
+	MatterID  string `json:"matter_id"`
+	Name      string `json:"name,omitempty"`
+	State     string `json:"state,omitempty"`
+	HoldCount int    `json:"hold_count"`
+}
+
+// VaultHoldSummary is a per-hold row (internal level). Scope summary only; no
+// search query or hold contents.
+type VaultHoldSummary struct {
+	HoldID        string `json:"hold_id"`
+	MatterID      string `json:"matter_id"`
+	Corpus        string `json:"corpus,omitempty"`
+	AccountCount  int    `json:"account_count"`
+	OrgUnitScoped bool   `json:"org_unit_scoped"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+}
+
+// DomainSettings is the domain + SSO surface. Trust emits the SSO-configured
+// flag, SAML-profile count, and verified-domain count; audit adds per-profile
+// and per-domain inventories; internal adds the SSO service host (host only).
+// IdP signing certs, SAML metadata XML, and full SSO URLs are never emitted.
+type DomainSettings struct {
+	SSOConfigured       bool                 `json:"sso_configured"`
+	SAMLProfileCount    int                  `json:"saml_profile_count"`
+	VerifiedDomainCount int                  `json:"verified_domain_count"`
+	PrimaryDomain       string               `json:"primary_domain,omitempty"`
+	SAMLProfiles        []SAMLProfileSummary `json:"saml_profiles,omitempty"`
+	Domains             []DomainSummary      `json:"domains,omitempty"`
+}
+
+// SAMLProfileSummary is a per-SAML-profile row (audit and above).
+type SAMLProfileSummary struct {
+	DisplayName    string `json:"display_name,omitempty"`
+	IdpEntityID    string `json:"idp_entity_id,omitempty"`
+	SSOServiceHost string `json:"sso_service_host,omitempty"`
+}
+
+// DomainSummary is a per-domain row (audit and above).
+type DomainSummary struct {
+	DomainName string `json:"domain_name"`
+	Verified   bool   `json:"verified"`
+	Primary    bool   `json:"primary"`
+}
+
+// DriveExternalSharing is the Drive external-sharing audit surface. It emerges
+// at audit (counts over a 30-day window); internal adds an event slice over a
+// tighter 7-day window. File names and contents are never emitted; recipients
+// appear as their email domain only (never the full address).
+type DriveExternalSharing struct {
+	CountWindowDays     int               `json:"count_window_days"`
+	ExternalShareEvents int               `json:"external_share_events"`
+	PublicOnWebEvents   int               `json:"public_on_web_events"`
+	EventWindowDays     int               `json:"event_window_days,omitempty"`
+	Events              []DriveShareEvent `json:"events,omitempty"`
+	Truncated           bool              `json:"truncated_events,omitempty"`
+	TruncatedDropped    int               `json:"truncated_events_dropped,omitempty"`
+}
+
+// DriveShareEvent is a single external-sharing event (internal level). No file
+// name; recipient is a domain only.
+type DriveShareEvent struct {
+	Time            string `json:"time,omitempty"`
+	FileID          string `json:"file_id,omitempty"`
+	SharerEmail     string `json:"sharer_email,omitempty"`
+	RecipientDomain string `json:"recipient_domain,omitempty"`
+	TargetRole      string `json:"target_role,omitempty"`
+}
+
+// AdminAuditLog is the admin-action audit surface (7-day, security-relevant).
+// Audit emits event counts by category; internal adds the event slice.
+type AdminAuditLog struct {
+	WindowDays       int             `json:"window_days"`
+	CountsByCategory map[string]int  `json:"counts_by_category"`
+	Events           []AuditLogEvent `json:"events,omitempty"`
+	Truncated        bool            `json:"truncated_events,omitempty"`
+	TruncatedDropped int             `json:"truncated_events_dropped,omitempty"`
+}
+
+// AuditLogEvent is a single admin audit event (internal level). No event-body /
+// debug-context payloads.
+type AuditLogEvent struct {
+	Time       string `json:"time,omitempty"`
+	ActorEmail string `json:"actor_email,omitempty"`
+	Name       string `json:"name"`
+	Category   string `json:"category,omitempty"`
+}
+
+// LoginAuditLog is the login audit surface (7-day, suspicious / failed logins).
+// Audit emits counts; internal adds the security-relevant event slice.
+type LoginAuditLog struct {
+	WindowDays         int          `json:"window_days"`
+	SuspiciousLogins   int          `json:"suspicious_logins"`
+	FailedLogins       int          `json:"failed_logins"`
+	PasswordLeakEvents int          `json:"password_leak_events"`
+	Events             []LoginEvent `json:"events,omitempty"`
+	Truncated          bool         `json:"truncated_events,omitempty"`
+	TruncatedDropped   int          `json:"truncated_events_dropped,omitempty"`
+}
+
+// LoginEvent is a single security-relevant login event (internal level). IP is
+// for forensic correlation; no geolocation.
+type LoginEvent struct {
+	Time       string `json:"time,omitempty"`
+	ActorEmail string `json:"actor_email,omitempty"`
+	IPAddress  string `json:"ip_address,omitempty"`
+	Name       string `json:"name"`
+}
+
+// OAuthTokens is the OAuth token audit surface. Trust emits issuance counts;
+// audit adds counts by app and by scope sensitivity; internal adds the per-token
+// list. Token values are never available via the API and never emitted.
+type OAuthTokens struct {
+	WindowDays               int            `json:"window_days"`
+	TokensIssued             int            `json:"tokens_issued"`
+	AppsWithNewTokens        int            `json:"apps_with_new_tokens"`
+	CountsByApp              map[string]int `json:"counts_by_app,omitempty"`
+	CountsByScopeSensitivity map[string]int `json:"counts_by_scope_sensitivity,omitempty"`
+	Tokens                   []OAuthToken   `json:"tokens,omitempty"`
+	Truncated                bool           `json:"truncated_tokens,omitempty"`
+	TruncatedDropped         int            `json:"truncated_tokens_dropped,omitempty"`
+}
+
+// OAuthToken is a single OAuth grant (internal level).
+type OAuthToken struct {
+	UserEmail   string   `json:"user_email,omitempty"`
+	ClientID    string   `json:"client_id,omitempty"`
+	DisplayName string   `json:"display_name,omitempty"`
+	Scopes      []string `json:"scopes,omitempty"`
+	GrantedAt   string   `json:"granted_at,omitempty"`
+}
+
+// Endpoint is the managed-device surface (mobile + Chrome OS). Trust emits
+// device counts by OS and the not-synced-30d count; audit adds per-OS
+// compliant / non-compliant breakdowns; internal adds per-device rows. Device
+// serial numbers and IMEIs are never collected.
+type Endpoint struct {
+	Total            int              `json:"total"`
+	ManagedByOS      map[string]int   `json:"managed_by_os"`
+	NotSynced30d     int              `json:"not_synced_30d"`
+	CompliantByOS    map[string]int   `json:"compliant_by_os,omitempty"`
+	NonCompliantByOS map[string]int   `json:"non_compliant_by_os,omitempty"`
+	Inventory        []EndpointDevice `json:"inventory,omitempty"`
+	Truncated        bool             `json:"truncated_devices,omitempty"`
+	TruncatedDropped int              `json:"truncated_devices_dropped,omitempty"`
+}
+
+// EndpointDevice is a per-device row (internal level). No serial / IMEI.
+type EndpointDevice struct {
+	Platform           string `json:"platform"`
+	OS                 string `json:"os"`
+	OSVersion          string `json:"os_version,omitempty"`
+	Model              string `json:"model,omitempty"`
+	OwnerEmail         string `json:"owner_email,omitempty"`
+	Compliant          bool   `json:"compliant"`
+	Encrypted          bool   `json:"encrypted"`
+	ScreenLockEnforced bool   `json:"screen_lock_enforced"`
+	LastSync           string `json:"last_sync,omitempty"`
+}
+
+// OrgUnits is the org-unit surface. Trust emits the count and max hierarchy
+// depth; audit adds the per-OU inventory with user counts and the block-
+// inheritance (policy-override) flag.
+type OrgUnits struct {
+	Total     int       `json:"total"`
+	MaxDepth  int       `json:"max_depth"`
+	Inventory []OrgUnit `json:"inventory,omitempty"`
+}
+
+// OrgUnit is a per-OU inventory row (audit and above). BlockInheritance is the
+// available policy-override signal; the full per-OU policy-override list
+// requires the Workspace Policy API, which has no stable Go binding.
+type OrgUnit struct {
+	Path             string `json:"path"`
+	ParentPath       string `json:"parent_path,omitempty"`
+	Description      string `json:"description,omitempty"`
+	UserCount        int    `json:"user_count"`
+	BlockInheritance bool   `json:"block_inheritance"`
+}
+
+// Groups is the Groups surface. Trust emits counts; audit adds the per-group
+// inventory plus the external-members-allowed count; internal adds member lists.
+type Groups struct {
+	Total                     int     `json:"total"`
+	AdminCreated              int     `json:"admin_created"`
+	UserCreated               int     `json:"user_created"`
+	ExternalMembersAllowed    int     `json:"external_members_allowed,omitempty"`
+	Inventory                 []Group `json:"inventory,omitempty"`
+	TruncatedInventory        bool    `json:"truncated_inventory,omitempty"`
+	TruncatedInventoryDropped int     `json:"truncated_inventory_dropped,omitempty"`
+	TruncatedMemberships      bool    `json:"truncated_group_memberships,omitempty"`
+}
+
+// Group is a per-group inventory row (audit and above).
+type Group struct {
+	Email                string        `json:"email"`
+	Name                 string        `json:"name,omitempty"`
+	Description          string        `json:"description,omitempty"`
+	MemberCount          int           `json:"member_count"`
+	AdminCreated         bool          `json:"admin_created"`
+	AllowExternalMembers bool          `json:"allow_external_members"`
+	WhoCanJoin           string        `json:"who_can_join,omitempty"`
+	WhoCanPostMessage    string        `json:"who_can_post_message,omitempty"`
+	Members              []GroupMember `json:"members,omitempty"`
+}
+
+// GroupMember is a single group membership row (internal level).
+type GroupMember struct {
+	Email            string `json:"email"`
+	Role             string `json:"role,omitempty"`
+	Type             string `json:"type,omitempty"`
+	Status           string `json:"status,omitempty"`
+	DeliverySettings string `json:"delivery_settings,omitempty"`
+}
+
+// UserMetrics contains user population counts. Inventory carries the per-user
+// rows surfaced at audit and above; it is omitted entirely at trust.
 type UserMetrics struct {
-	Total        int     `json:"total"`
-	Suspended    int     `json:"suspended"`
-	Archived     int     `json:"archived"`
-	LockedPct    float64 `json:"locked_pct"`
-	InactivePct  float64 `json:"inactive_pct"`
-	InactiveDays int     `json:"inactive_days"`
+	Total                     int     `json:"total"`
+	Suspended                 int     `json:"suspended"`
+	Archived                  int     `json:"archived"`
+	LockedPct                 float64 `json:"locked_pct"`
+	InactivePct               float64 `json:"inactive_pct"`
+	InactiveDays              int     `json:"inactive_days"`
+	Inventory                 []User  `json:"inventory,omitempty"`
+	TruncatedInventory        bool    `json:"truncated_inventory,omitempty"`
+	TruncatedInventoryDropped int     `json:"truncated_inventory_dropped,omitempty"`
+}
+
+// User is a per-user inventory row emitted at audit and above. Per-user passkey
+// and hardware-security-key registration, and per-user password strength, are
+// intentionally absent: the Directory API exposes those only as org-level
+// aggregates (carried in the trust-level usage-report metrics), not per user.
+type User struct {
+	PrimaryEmail  string `json:"primary_email"`
+	Suspended     bool   `json:"suspended"`
+	Archived      bool   `json:"archived"`
+	OrgUnitPath   string `json:"org_unit_path,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	AgreedToTerms bool   `json:"agreed_to_terms"`
+	IPAllowlisted bool   `json:"ip_allowlisted"`
+	TwoSVEnrolled bool   `json:"2sv_enrolled"`
+	TwoSVEnforced bool   `json:"2sv_enforced"`
+	Active7d      bool   `json:"active_7d"`
+	Active30d     bool   `json:"active_30d"`
+
+	// Internal-level fields. Populated only at internal; omitempty keeps them
+	// out of audit-level rows.
+	LastLoginAt               string `json:"last_login_at,omitempty"`
+	ChangePasswordAtNextLogin bool   `json:"change_password_at_next_login,omitempty"`
 }
 
 // ActivityMetrics contains login activity percentages.
@@ -74,13 +365,38 @@ type AuthMetrics struct {
 	SecurityKeysTotal int     `json:"security_keys_total"`
 }
 
-// AdminMetrics contains privileged user counts plus 2-step enrollment and enforcement.
+// AdminMetrics contains privileged user counts plus 2-step enrollment and
+// enforcement. Inventory and CustomRoles carry the per-admin and per-role detail
+// surfaced at audit and above; both are omitted at trust.
 type AdminMetrics struct {
-	PrivilegedUsersCount          int     `json:"privileged_users_count"`
-	SuperAdminCount               int     `json:"super_admin_count"`
-	DelegatedAdminCount           int     `json:"delegated_admin_count"`
-	PrivilegedUsers2SVEnrolledPct float64 `json:"privileged_users_2sv_enrolled_pct"`
-	PrivilegedUsers2SVEnforcedPct float64 `json:"privileged_users_2sv_enforced_pct"`
+	PrivilegedUsersCount          int          `json:"privileged_users_count"`
+	SuperAdminCount               int          `json:"super_admin_count"`
+	DelegatedAdminCount           int          `json:"delegated_admin_count"`
+	PrivilegedUsers2SVEnrolledPct float64      `json:"privileged_users_2sv_enrolled_pct"`
+	PrivilegedUsers2SVEnforcedPct float64      `json:"privileged_users_2sv_enforced_pct"`
+	Inventory                     []Admin      `json:"inventory,omitempty"`
+	CustomRoles                   []CustomRole `json:"custom_roles,omitempty"`
+}
+
+// Admin is a per-privileged-user inventory row emitted at audit and above.
+type Admin struct {
+	PrimaryEmail   string   `json:"primary_email"`
+	SuperAdmin     bool     `json:"super_admin"`
+	DelegatedAdmin bool     `json:"delegated_admin"`
+	TwoSVEnrolled  bool     `json:"2sv_enrolled"`
+	TwoSVEnforced  bool     `json:"2sv_enforced"`
+	Roles          []string `json:"roles,omitempty"`
+
+	// Internal-level field: whether any of the admin's role grants are scoped to
+	// an org unit rather than the whole org.
+	OrgUnitScoped bool `json:"org_unit_scoped,omitempty"`
+}
+
+// CustomRole is an admin-defined (non-system) role definition, surfaced at audit.
+type CustomRole struct {
+	Name           string `json:"name"`
+	Description    string `json:"description,omitempty"`
+	PrivilegeCount int    `json:"privilege_count"`
 }
 
 // PasswordMetrics contains password hygiene metrics.
@@ -114,11 +430,39 @@ type AccessContextManagerMetrics struct {
 	BasicDevicePolicyAccessLevelsCount  int      `json:"basic_device_policy_access_levels_count"`
 	BasicManagedDeviceAccessLevelsCount int      `json:"basic_managed_device_access_levels_count"`
 	BasicDevicePolicyAccessLevelTitles  []string `json:"basic_device_policy_access_level_titles,omitempty"`
+
+	// Levels carries the per-access-level rows surfaced at audit and above;
+	// omitted at trust.
+	Levels []AccessLevelSummary `json:"levels,omitempty"`
 }
 
-// Diagnostics contains informational gaps and caveats.
+// AccessLevelSummary is a per-access-level row emitted at audit and above. Audit
+// emits the title + device-policy summary; internal adds the rule details
+// (IP subnetworks, regions, required access levels, encryption statuses).
+type AccessLevelSummary struct {
+	Title                 string `json:"title"`
+	Custom                bool   `json:"custom"`
+	HasDevicePolicy       bool   `json:"has_device_policy"`
+	RequiresScreenlock    bool   `json:"requires_screenlock"`
+	RequiresAdminApproval bool   `json:"requires_admin_approval"`
+	RequiresCorpOwned     bool   `json:"requires_corp_owned"`
+	OSConstraintCount     int    `json:"os_constraint_count"`
+
+	// Internal-level rule details.
+	AllowedDeviceManagementLevels []string `json:"allowed_device_management_levels,omitempty"`
+	AllowedEncryptionStatuses     []string `json:"allowed_encryption_statuses,omitempty"`
+	IPSubnetworks                 []string `json:"ip_subnetworks,omitempty"`
+	Regions                       []string `json:"regions,omitempty"`
+	RequiredAccessLevels          []string `json:"required_access_levels,omitempty"`
+}
+
+// Diagnostics contains informational gaps and caveats. Scope and admin-role
+// denials (a missing permission the customer can grant) are reported under
+// PermissionErrors; everything else (licensing gaps, lag caveats, truncation)
+// under Warnings.
 type Diagnostics struct {
-	Warnings []string `json:"warnings,omitempty"`
+	PermissionErrors []string `json:"permission_errors,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
 }
 
 // NewOrgPosture creates an initialized posture document.
