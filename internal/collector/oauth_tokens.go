@@ -11,12 +11,12 @@ import (
 const tokenEventAuthorize = "authorize"
 
 // scanOAuthTokens collects the OAuth token audit surface (connected apps,
-// 7-day window; audit and above). Audit emits issuance counts plus counts by app
-// and by scope-sensitivity bucket; internal adds the per-token list. Token
-// values are never available via the API and are never emitted. Returns nil at
-// trust or on scope / role denial.
+// 7-day window; internal only). Emits issuance counts, counts by app and by
+// scope-sensitivity bucket, plus the per-token list. Token values are never
+// available via the API and are never emitted. Returns nil below internal or on
+// scope / role denial.
 func (c *Collector) scanOAuthTokens(ctx context.Context, scope scanScope) *OAuthTokens {
-	if !scope.level.AtLeast(componentsdk.LevelAudit) {
+	if !scope.level.AtLeast(componentsdk.LevelInternal) {
 		return nil
 	}
 
@@ -26,12 +26,10 @@ func (c *Collector) scanOAuthTokens(ctx context.Context, scope scanScope) *OAuth
 		return nil
 	}
 
-	result := &OAuthTokens{WindowDays: AuditLogWindowDays}
-	collectBreakdown := scope.level.AtLeast(componentsdk.LevelAudit)
-	includeTokens := scope.level.AtLeast(componentsdk.LevelInternal)
-	if collectBreakdown {
-		result.CountsByApp = map[string]int{}
-		result.CountsByScopeSensitivity = map[string]int{}
+	result := &OAuthTokens{
+		WindowDays:               AuditLogWindowDays,
+		CountsByApp:              map[string]int{},
+		CountsByScopeSensitivity: map[string]int{},
 	}
 
 	apps := map[string]struct{}{}
@@ -47,35 +45,29 @@ func (c *Collector) scanOAuthTokens(ctx context.Context, scope scanScope) *OAuth
 			apps[clientID] = struct{}{}
 		}
 
-		if collectBreakdown {
-			label := appName
-			if label == "" {
-				label = clientID
-			}
-			result.CountsByApp[label]++
-			result.CountsByScopeSensitivity[scopeSensitivity(scopes)]++
+		label := appName
+		if label == "" {
+			label = clientID
 		}
+		result.CountsByApp[label]++
+		result.CountsByScopeSensitivity[scopeSensitivity(scopes)]++
 
-		if includeTokens {
-			row := OAuthToken{
-				UserEmail:   e.ActorEmail,
-				ClientID:    clientID,
-				DisplayName: appName,
-				Scopes:      scopes,
-			}
-			if !e.Time.IsZero() {
-				row.GrantedAt = e.Time.UTC().Format(time.RFC3339)
-			}
-			tokens = append(tokens, row)
+		row := OAuthToken{
+			UserEmail:   e.ActorEmail,
+			ClientID:    clientID,
+			DisplayName: appName,
+			Scopes:      scopes,
 		}
+		if !e.Time.IsZero() {
+			row.GrantedAt = e.Time.UTC().Format(time.RFC3339)
+		}
+		tokens = append(tokens, row)
 	}
 	result.AppsWithNewTokens = len(apps)
 
-	if includeTokens {
-		result.Tokens, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, tokens, AuditEventsCap, "oauth token list", func(a, b OAuthToken) bool {
-			return a.GrantedAt > b.GrantedAt
-		})
-	}
+	result.Tokens, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, tokens, AuditEventsCap, "oauth token list", func(a, b OAuthToken) bool {
+		return a.GrantedAt > b.GrantedAt
+	})
 	return result
 }
 

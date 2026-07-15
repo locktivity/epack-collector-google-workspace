@@ -369,12 +369,9 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 		t.Fatalf("Users.Archived = %d, want 3", posture.Users.Archived)
 	}
 
-	// Activity.
-	if posture.Activity.Active7dPct != 80.0 {
-		t.Fatalf("Activity.Active7dPct = %.2f, want 80.00", posture.Activity.Active7dPct)
-	}
-	if posture.Activity.Active30dPct != 90.0 {
-		t.Fatalf("Activity.Active30dPct = %.2f, want 90.00", posture.Activity.Active30dPct)
+	// Activity must not appear at trust (audit+ only).
+	if posture.Activity != nil {
+		t.Fatalf("Activity must be nil at trust, got %+v", posture.Activity)
 	}
 
 	// Authentication.
@@ -402,9 +399,9 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 		t.Fatalf("Passwords.PasswordLengthNonCompliantPct = %.2f, want 4.00", posture.Passwords.PasswordLengthNonCompliantPct)
 	}
 
-	// Apps.
-	if posture.Apps.AuthorizedAppsCount != 42 {
-		t.Fatalf("Apps.AuthorizedAppsCount = %d, want 42", posture.Apps.AuthorizedAppsCount)
+	// Apps must not appear at trust (internal only).
+	if posture.Apps != nil {
+		t.Fatalf("Apps must be nil at trust, got %+v", posture.Apps)
 	}
 
 	// Admins (from Directory API, active only).
@@ -988,7 +985,7 @@ func TestCollect_AuditSurfacesByLevel(t *testing.T) {
 		}
 	})
 
-	t.Run("audit emits counts, no event slices", func(t *testing.T) {
+	t.Run("audit emits counts, no event slices; oauth tokens omitted", func(t *testing.T) {
 		p := collectAt(componentsdk.LevelAudit)
 		if p.AdminAuditLog.CountsByCategory["USER_SETTINGS"] != 1 || p.AdminAuditLog.CountsByCategory["DOMAIN_SETTINGS"] != 1 {
 			t.Fatalf("admin counts wrong: %v", p.AdminAuditLog.CountsByCategory)
@@ -996,17 +993,14 @@ func TestCollect_AuditSurfacesByLevel(t *testing.T) {
 		if p.AdminAuditLog.Events != nil {
 			t.Fatalf("admin event slice must be omitted at audit")
 		}
-		if p.OAuthTokens == nil || p.OAuthTokens.TokensIssued != 1 || p.OAuthTokens.AppsWithNewTokens != 1 {
-			t.Fatalf("OAuthTokens audit counts wrong: %+v", p.OAuthTokens)
+		if p.OAuthTokens != nil {
+			t.Fatalf("OAuthTokens must be nil at audit (internal only): %+v", p.OAuthTokens)
 		}
 		if p.LoginAuditLog.SuspiciousLogins != 1 || p.LoginAuditLog.FailedLogins != 1 {
 			t.Fatalf("login counts wrong: %+v", p.LoginAuditLog)
 		}
 		if p.DriveExternalSharing.ExternalShareEvents != 1 || p.DriveExternalSharing.PublicOnWebEvents != 1 {
 			t.Fatalf("drive counts wrong: %+v", p.DriveExternalSharing)
-		}
-		if p.OAuthTokens.CountsByScopeSensitivity["high"] != 1 {
-			t.Fatalf("gmail.modify should bucket as high: %v", p.OAuthTokens.CountsByScopeSensitivity)
 		}
 	})
 
@@ -1227,11 +1221,8 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 		t.Fatalf("PasswordPolicyNoncompliantPct = %v, want 4.00", idp.UserSecurity.PasswordPolicyNoncompliantPct)
 	}
 
-	if idp.AppSecurity == nil {
-		t.Fatal("AppSecurity = nil, want authorized app count")
-	}
-	if idp.AppSecurity.AuthorizedThirdPartyAppsCount == nil || *idp.AppSecurity.AuthorizedThirdPartyAppsCount != 42 {
-		t.Fatalf("AuthorizedThirdPartyAppsCount = %v, want 42", idp.AppSecurity.AuthorizedThirdPartyAppsCount)
+	if idp.AppSecurity != nil {
+		t.Fatalf("AppSecurity must be nil at trust (internal only), got %+v", idp.AppSecurity)
 	}
 	if idp.PrivilegedAccess == nil {
 		t.Fatal("PrivilegedAccess = nil, want admin posture")
@@ -1268,8 +1259,8 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 
-	if _, ok := decoded["app_security"]; !ok {
-		t.Fatal("idp-posture JSON should include app_security when authorized app count is available")
+	if _, ok := decoded["app_security"]; ok {
+		t.Fatal("app_security must not appear in trust-level IDP posture (internal only)")
 	}
 
 	if idp.Policy == nil {

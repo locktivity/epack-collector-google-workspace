@@ -114,8 +114,10 @@ func TestE2E_RealGoogleWorkspaceCollection(t *testing.T) {
 
 	assertPercentFloat(t, "users.locked_pct", posture.Users.LockedPct)
 	assertPercentFloat(t, "users.inactive_pct", posture.Users.InactivePct)
-	assertPercentFloat(t, "activity.active_7d_pct", posture.Activity.Active7dPct)
-	assertPercentFloat(t, "activity.active_30d_pct", posture.Activity.Active30dPct)
+	if posture.Activity != nil {
+		assertPercentFloat(t, "activity.active_7d_pct", posture.Activity.Active7dPct)
+		assertPercentFloat(t, "activity.active_30d_pct", posture.Activity.Active30dPct)
+	}
 	assertPercentFloat(t, "authentication.2sv_enrolled_pct", posture.Authentication.TwoSVEnrolledPct)
 	assertPercentFloat(t, "authentication.2sv_enforced_pct", posture.Authentication.TwoSVEnforcedPct)
 	assertPercentFloat(t, "authentication.2sv_protected_pct", posture.Authentication.TwoSVProtectedPct)

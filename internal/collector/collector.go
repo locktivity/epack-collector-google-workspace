@@ -145,6 +145,13 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 	applyUsageReport(posture, report)
 
+	if !level.AtLeast(componentsdk.LevelAudit) {
+		posture.Activity = nil
+	}
+	if !level.AtLeast(componentsdk.LevelInternal) {
+		posture.Apps = nil
+	}
+
 	// Step 3: List users for admin counts and 90-day inactivity.
 	c.status("Scanning users for admin status and inactivity...")
 	userScan, scanErr := c.scanUsers(ctx, scope)
@@ -760,7 +767,7 @@ func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageR
 		LockedPct:    percentFloat(int(report.NumLockedUsers), int(report.NumUsers)),
 		InactiveDays: DefaultInactiveDays,
 	}
-	posture.Activity = ActivityMetrics{
+	posture.Activity = &ActivityMetrics{
 		Active7dPct:  percentFloat(int(report.Num7DayLogins), int(report.NumUsers)),
 		Active30dPct: percentFloat(int(report.Num30DayLogins), int(report.NumUsers)),
 	}
@@ -775,7 +782,7 @@ func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageR
 		WeakPasswordPct:               percentFloat(int(report.NumUsersPasswordStrengthWeak), int(report.NumUsers)),
 		PasswordLengthNonCompliantPct: percentFloat(int(report.NumUsersPasswordLengthNonCompliant), int(report.NumUsers)),
 	}
-	posture.Apps = AppMetrics{
+	posture.Apps = &AppMetrics{
 		AuthorizedAppsCount: int(report.NumAuthorizedApps),
 	}
 }

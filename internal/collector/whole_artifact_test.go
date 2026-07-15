@@ -75,6 +75,8 @@ func TestWholeArtifact_ThreeLevelBoundary(t *testing.T) {
 		`"login_audit_log"`, `"drive_external_sharing"`, `"compliant_by_os"`,
 		`"saml_profiles"`, `"events"`, `"holds"`, `"matters"`, `"tokens"`,
 		`"counts_by_app"`, `"counts_by_category"`,
+		`"active_7d_pct"`, `"active_30d_pct"`,
+		`"authorized_apps_count"`, `"oauth_tokens"`,
 	}
 
 	_, trustJSON := collectJSON(t, componentsdk.LevelTrust)
