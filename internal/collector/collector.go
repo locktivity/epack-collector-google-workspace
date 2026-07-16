@@ -143,14 +143,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		c.warn("usage report for %s returned no user data; tenant may be too new for report generation", reportDate)
 	}
 
-	applyUsageReport(posture, report)
-
-	if !level.AtLeast(componentsdk.LevelAudit) {
-		posture.Activity = nil
-	}
-	if !level.AtLeast(componentsdk.LevelInternal) {
-		posture.Apps = nil
-	}
+	applyUsageReport(posture, report, level)
 
 	// Step 3: List users for admin counts and 90-day inactivity.
 	c.status("Scanning users for admin status and inactivity...")
@@ -756,10 +749,12 @@ func reportDateFor(now time.Time, daysBack int) string {
 	return now.In(pacificLocation).AddDate(0, 0, -daysBack).Format("2006-01-02")
 }
 
-// applyUsageReport maps the customer usage report into the posture's trust-level
-// metric blocks. The per-user inactivity percentage and live 2SV enforcement
-// percentage are overwritten later from the Directory user scan.
-func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageReport) {
+// applyUsageReport maps the customer usage report into the posture metric
+// blocks. Activity (7/30-day login percentages) is audit+ only; Apps
+// (authorized app count) is internal only. The per-user inactivity percentage
+// and live 2SV enforcement percentage are overwritten later from the Directory
+// user scan.
+func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageReport, level componentsdk.Level) {
 	posture.Users = UserMetrics{
 		Total:        int(report.NumUsers),
 		Suspended:    int(report.NumSuspendedUsers),
@@ -767,9 +762,11 @@ func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageR
 		LockedPct:    percentFloat(int(report.NumLockedUsers), int(report.NumUsers)),
 		InactiveDays: DefaultInactiveDays,
 	}
-	posture.Activity = &ActivityMetrics{
-		Active7dPct:  percentFloat(int(report.Num7DayLogins), int(report.NumUsers)),
-		Active30dPct: percentFloat(int(report.Num30DayLogins), int(report.NumUsers)),
+	if level.AtLeast(componentsdk.LevelAudit) {
+		posture.Activity = &ActivityMetrics{
+			Active7dPct:  percentFloat(int(report.Num7DayLogins), int(report.NumUsers)),
+			Active30dPct: percentFloat(int(report.Num30DayLogins), int(report.NumUsers)),
+		}
 	}
 	posture.Authentication = AuthMetrics{
 		TwoSVEnrolledPct:  percentFloat(int(report.NumUsers2SVEnrolled), int(report.NumUsers)),
@@ -782,8 +779,10 @@ func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageR
 		WeakPasswordPct:               percentFloat(int(report.NumUsersPasswordStrengthWeak), int(report.NumUsers)),
 		PasswordLengthNonCompliantPct: percentFloat(int(report.NumUsersPasswordLengthNonCompliant), int(report.NumUsers)),
 	}
-	posture.Apps = &AppMetrics{
-		AuthorizedAppsCount: int(report.NumAuthorizedApps),
+	if level.AtLeast(componentsdk.LevelInternal) {
+		posture.Apps = &AppMetrics{
+			AuthorizedAppsCount: int(report.NumAuthorizedApps),
+		}
 	}
 }
 
