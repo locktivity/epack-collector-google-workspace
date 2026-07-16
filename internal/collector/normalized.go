@@ -109,7 +109,6 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 	passwordPolicyNoncompliantPct := o.Passwords.PasswordLengthNonCompliantPct
 	privilegedMFACoveragePct := o.Admins.PrivilegedUsers2SVEnrolledPct
 	mfaRequiredCoveragePct := o.Authentication.TwoSVEnforcedPct
-	authorizedAppsCount := o.Apps.AuthorizedAppsCount
 	suspendedPct := percentFloat(o.Users.Suspended, o.Users.Total)
 	archivedPct := percentFloat(o.Users.Archived, o.Users.Total)
 	standingPrivilegedUsersCount := o.Admins.PrivilegedUsersCount
@@ -128,9 +127,6 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 			WeakPasswordPct:               &weakPasswordPct,
 			PasswordPolicyNoncompliantPct: &passwordPolicyNoncompliantPct,
 		},
-		AppSecurity: &IDPPostureAppSecurity{
-			AuthorizedThirdPartyAppsCount: &authorizedAppsCount,
-		},
 		PrivilegedAccess: &IDPPosturePrivilegedAccess{
 			PrivilegedUsersCount:         o.Admins.PrivilegedUsersCount,
 			SuperAdminCount:              o.Admins.SuperAdminCount,
@@ -146,6 +142,13 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 			SuspendedPct: &suspendedPct,
 			ArchivedPct:  &archivedPct,
 		},
+	}
+
+	if o.Apps != nil {
+		count := o.Apps.AuthorizedAppsCount
+		posture.AppSecurity = &IDPPostureAppSecurity{
+			AuthorizedThirdPartyAppsCount: &count,
+		}
 	}
 
 	if o.DeviceAccess != nil && o.DeviceAccess.ManagedDeviceRequirementEvidenced {

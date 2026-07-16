@@ -63,12 +63,12 @@ type OrgPosture struct {
 	Provider         string               `json:"provider"`
 	OrgDomain        string               `json:"org_domain"`
 	CustomerID       string               `json:"customer_id"`
-	Users            UserMetrics          `json:"users"`
-	Activity         ActivityMetrics      `json:"activity"`
-	Authentication   AuthMetrics          `json:"authentication"`
-	Admins           AdminMetrics         `json:"admins"`
-	Passwords        PasswordMetrics      `json:"passwords"`
-	Apps             AppMetrics           `json:"apps"`
+	Users          UserMetrics          `json:"users"`
+	Activity       *ActivityMetrics     `json:"activity,omitempty"`
+	Authentication AuthMetrics          `json:"authentication"`
+	Admins         AdminMetrics         `json:"admins"`
+	Passwords      PasswordMetrics      `json:"passwords"`
+	Apps           *AppMetrics          `json:"apps,omitempty"`
 	DeviceAccess     *DeviceAccessMetrics `json:"device_access,omitempty"`
 
 	// New surfaces (audit / internal scope expansion). Each is a pointer with
@@ -207,9 +207,9 @@ type LoginEvent struct {
 	Name       string `json:"name"`
 }
 
-// OAuthTokens is the OAuth token audit surface. Trust emits issuance counts;
-// audit adds counts by app and by scope sensitivity; internal adds the per-token
-// list. Token values are never available via the API and never emitted.
+// OAuthTokens is the OAuth token audit surface (internal only). Emits issuance
+// counts, counts by app and scope sensitivity, plus the per-token list. Token
+// values are never available via the API and never emitted.
 type OAuthTokens struct {
 	WindowDays               int            `json:"window_days"`
 	TokensIssued             int            `json:"tokens_issued"`
@@ -350,7 +350,7 @@ type User struct {
 	ChangePasswordAtNextLogin bool   `json:"change_password_at_next_login,omitempty"`
 }
 
-// ActivityMetrics contains login activity percentages.
+// ActivityMetrics contains login activity percentages (audit and above).
 type ActivityMetrics struct {
 	Active7dPct  float64 `json:"active_7d_pct"`
 	Active30dPct float64 `json:"active_30d_pct"`
@@ -405,7 +405,7 @@ type PasswordMetrics struct {
 	PasswordLengthNonCompliantPct float64 `json:"password_length_non_compliant_pct"`
 }
 
-// AppMetrics contains application security metrics.
+// AppMetrics contains application security metrics (internal only).
 type AppMetrics struct {
 	AuthorizedAppsCount int `json:"authorized_apps_count"`
 }
