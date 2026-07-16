@@ -662,9 +662,9 @@ func levelExplicitlyRequiresManagedDevice(level googleworkspace.AccessLevel) boo
 
 // maxReportRetries is the number of progressively older dates to try when
 // the Reports API returns a "data not yet available" error.
-const maxReportRetries = 4
+const maxReportRetries = 10
 
-// fetchUsageReport tries progressively older report dates (yesterday minus 0..3
+// fetchUsageReport tries progressively older report dates (yesterday minus 0..9
 // extra days in Pacific Time) until it finds one with data. Google Workspace
 // usage reports typically lag 2-3 days behind the current date.
 //
