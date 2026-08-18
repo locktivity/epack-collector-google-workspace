@@ -53,6 +53,14 @@ type IDPPosturePolicy struct {
 	IdleTimeoutMaxMin                      *int     `json:"idle_timeout_max_min,omitempty"`
 	LegacyAuthBlocked                      *bool    `json:"legacy_auth_blocked,omitempty"`
 	PhishingResistantRequiredForPrivileged *bool    `json:"phishing_resistant_required_for_privileged,omitempty"`
+
+	// Password rules, plus whether they bind the existing population.
+	// MinimumPasswordLength and PasswordStrengthRequired are requirements;
+	// PasswordPolicyEnforcedForExistingUsers states whether those two apply to
+	// users who already have a password or only as passwords get changed.
+	MinimumPasswordLength                  *int  `json:"minimum_password_length,omitempty"`
+	PasswordStrengthRequired               *bool `json:"password_strength_required,omitempty"`
+	PasswordPolicyEnforcedForExistingUsers *bool `json:"password_policy_enforced_for_existing_users,omitempty"`
 }
 
 // IDPPostureLifecycle contains account lifecycle posture metrics.
@@ -82,7 +90,8 @@ type IDPPostureDeviceAccess struct {
 //   - app_security.authorized_third_party_apps_count
 //   - privileged_access: admin counts and privileged MFA coverage
 //   - policy.mfa_required / policy.mfa_required_coverage_pct /
-//     legacy_auth_blocked
+//     legacy_auth_blocked / minimum_password_length /
+//     password_strength_required / password_policy_enforced_for_existing_users
 //   - lifecycle: suspended and archived account percentages
 //   - device_access.managed_device_required, when Context-Aware Access audit
 //     logs show device-state-based deny events
@@ -142,6 +151,18 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 			SuspendedPct: &suspendedPct,
 			ArchivedPct:  &archivedPct,
 		},
+	}
+
+	if o.Passwords.Policy != nil {
+		minimumPasswordLength := o.Passwords.Policy.MinimumLength
+		// The shared shape stays vendor-neutral: Okta and Entra express the
+		// same requirement without Google's STRONG / WEAK vocabulary.
+		passwordStrengthRequired := o.Passwords.Policy.AllowedStrength == strengthStrong
+		passwordPolicyEnforcedForExistingUsers := o.Passwords.Policy.EnforceRequirementsAtLogin
+
+		posture.Policy.MinimumPasswordLength = &minimumPasswordLength
+		posture.Policy.PasswordStrengthRequired = &passwordStrengthRequired
+		posture.Policy.PasswordPolicyEnforcedForExistingUsers = &passwordPolicyEnforcedForExistingUsers
 	}
 
 	if o.Apps != nil {

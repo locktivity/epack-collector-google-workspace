@@ -9,7 +9,7 @@ superset of `trust`. No level removes a field that a lower level produced.
 
 | Level | Question it answers | What's in the artifact |
 |---|---|---|
-| `trust` (default) | Do they pass? | Org-wide aggregates and on/off flags: user / admin counts, 2-step-verification and passkey coverage, password-hygiene percentages, authorized-app counts, and Context-Aware Access device-state deny evidence. No user emails, group names, device details, or audit-log events. Needs only the base scopes. |
+| `trust` (default) | Do they pass? | Org-wide aggregates and on/off flags: user / admin counts, 2-step-verification and passkey coverage, password-hygiene percentages and the configured password policy, authorized-app counts, and Context-Aware Access device-state deny evidence. No user emails, group names, device details, or audit-log events. Needs only the base scopes. |
 | `audit` | Where is the gap? | Per-resource inventories (users, admins + role assignments, custom roles, groups, org units, devices, SAML profiles, domains) and counts of admin, login, OAuth-token, and external-Drive-sharing events over a recent window. Email / login is the only user identifier. |
 | `internal` | Who or what specifically? | Per-user last-login, per-group member rosters, per-device records, security-relevant admin / login event slices, per-OAuth-token grants with scopes, SSO service hosts, and Vault hold metadata. |
 
@@ -74,8 +74,14 @@ emit zeroed and a diagnostic is recorded; the rest of the artifact still ships.
 
 ### Passwords (`passwords`) and Apps (`apps`)
 
-- **trust**: weak-password and password-length-non-compliant percentages;
-  authorized-app count.
+- **trust**: weak-password and password-length-non-compliant percentages; the
+  configured password policy (`passwords.policy`); authorized-app count.
+
+The password policy is org-wide configuration naming no person and no org unit,
+so it sits at trust beside the percentages. It needs
+`cloud-identity.policies.readonly`, which is not one of the base scopes: without
+it the percentages still collect and the policy object is omitted with a
+scope-denied diagnostic.
 
 ### Device access (`device_access`)
 

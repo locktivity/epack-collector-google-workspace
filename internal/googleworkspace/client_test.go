@@ -3,6 +3,7 @@ package googleworkspace
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	accesscontextmanager "google.golang.org/api/accesscontextmanager/v1"
 	admin "google.golang.org/api/admin/directory/v1"
 	reports "google.golang.org/api/admin/reports/v1"
+	cloudidentity "google.golang.org/api/cloudidentity/v1"
 	"google.golang.org/api/option"
 )
 
@@ -552,7 +554,16 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *APIClient {
 		t.Fatalf("accesscontextmanager.NewService() error = %v", err)
 	}
 
-	return NewClientWithServices(dirService, reportsService, accessContextService)
+	cloudIdentityService, err := cloudidentity.NewService(
+		context.Background(),
+		option.WithHTTPClient(httpClient),
+		option.WithEndpoint("https://unit.test/"),
+	)
+	if err != nil {
+		t.Fatalf("cloudidentity.NewService() error = %v", err)
+	}
+
+	return NewClientWithServices(dirService, reportsService, accessContextService, cloudIdentityService)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -577,4 +588,138 @@ func (r *responseRecorder) Write(data []byte) (int, error) {
 
 func (r *responseRecorder) WriteHeader(statusCode int) {
 	r.statusCode = statusCode
+}
+
+func TestAPIClientListPasswordPoliciesDropsIdentifiers(t *testing.T) {
+	requests := 0
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/policies" {
+			return
+		}
+		if got := r.URL.Query().Get("filter"); !strings.Contains(got, `customer == "customers/C01abc23d"`) {
+			t.Fatalf("filter = %q, want it to pin the customer", got)
+		}
+
+		requests++
+		switch requests {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policies": []map[string]any{
+					{
+						"name":     "policies/aaaaaaaa",
+						"customer": "customers/C01abc23d",
+						"type":     "ADMIN",
+						"policyQuery": map[string]any{
+							"orgUnit": "orgUnits/03ph8a2z1x9y7w6",
+							"group":   "groups/01x0gk373mzsdfg",
+							"query":   "entity.org_units.exists(org_unit, org_unit.org_unit_id == orgUnitId('03ph8a2z1x9y7w6'))",
+						},
+						"setting": map[string]any{
+							"type": "settings/security.password",
+							"value": map[string]any{
+								"minimumLength":              12,
+								"maximumLength":              100,
+								"allowedStrength":            "STRONG",
+								"enforceRequirementsAtLogin": true,
+								"allowReuse":                 false,
+								"expirationDuration":         "7776000s",
+							},
+						},
+					},
+				},
+				"nextPageToken": "page-2",
+			})
+		case 2:
+			if got := r.URL.Query().Get("pageToken"); got != "page-2" {
+				t.Fatalf("pageToken = %q, want page-2", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policies": []map[string]any{
+					{
+						"name":     "policies/bbbbbbbb",
+						"customer": "customers/C01abc23d",
+						"policyQuery": map[string]any{
+							"orgUnit": "orgUnits/contractors",
+						},
+						"setting": map[string]any{
+							"type": "settings/security.password",
+							"value": map[string]any{
+								"minimumLength":   8,
+								"allowedStrength": "WEAK",
+								"allowReuse":      true,
+							},
+						},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	})
+
+	var got []PasswordPolicy
+	err := client.ListPasswordPolicies(context.Background(), "C01abc23d", func(policies []PasswordPolicy) error {
+		got = append(got, policies...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ListPasswordPolicies() error = %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("len(policies) = %d, want 2 across both pages", len(got))
+	}
+
+	// The API returns an org unit, a group, a resource name, and a CEL query on
+	// every policy. None may survive into the collector's type.
+	rendered := fmt.Sprintf("%+v", got)
+	for _, identifier := range []string{"orgUnits", "groups/", "policies/", "org_unit_id", "contractors"} {
+		if strings.Contains(rendered, identifier) {
+			t.Fatalf("policy identifier %q leaked into %s", identifier, rendered)
+		}
+	}
+
+	want := PasswordPolicy{
+		MinimumLength:              12,
+		MaximumLength:              100,
+		AllowedStrength:            "STRONG",
+		EnforceRequirementsAtLogin: true,
+		AllowReuse:                 false,
+		ExpirationDays:             90,
+	}
+	if got[0] != want {
+		t.Fatalf("first policy = %+v, want %+v", got[0], want)
+	}
+
+	if got[1].MinimumLength != 8 || got[1].AllowedStrength != "WEAK" || !got[1].AllowReuse {
+		t.Fatalf("second policy = %+v, want the weak contractor policy", got[1])
+	}
+	if got[1].ExpirationDays != 0 {
+		t.Fatalf("second policy ExpirationDays = %d, want 0 for an absent duration", got[1].ExpirationDays)
+	}
+
+}
+
+func TestAPIClientListPasswordPoliciesDefaultsCustomer(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/policies" {
+			return
+		}
+		if got := r.URL.Query().Get("filter"); !strings.Contains(got, `customers/my_customer`) {
+			t.Fatalf("filter = %q, want the default customer key", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+
+	called := false
+	err := client.ListPasswordPolicies(context.Background(), "", func([]PasswordPolicy) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ListPasswordPolicies() error = %v", err)
+	}
+	if called {
+		t.Fatal("callback ran for an empty policy list, want it skipped")
+	}
 }

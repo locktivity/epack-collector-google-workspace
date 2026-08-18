@@ -240,6 +240,21 @@ type GroupMember struct {
 	DeliverySettings string
 }
 
+// PasswordPolicy is one tenant password policy read from the Policy API.
+//
+// The API returns a policy per org unit and per group, each carrying an org
+// unit path, a group ID, a resource name, and a CEL query. None of those reach
+// this type: the collector emits an aggregate of the policy values only, so the
+// identifiers are dropped where they are read rather than filtered downstream.
+type PasswordPolicy struct {
+	MinimumLength              int
+	MaximumLength              int
+	AllowedStrength            string // "STRONG" or "WEAK"
+	EnforceRequirementsAtLogin bool
+	AllowReuse                 bool
+	ExpirationDays             int // 0 means passwords never expire
+}
+
 // Client defines the Google Workspace operations needed by the collector.
 type Client interface {
 	GetCustomer(ctx context.Context, customerKey string) (Customer, error)
@@ -261,4 +276,5 @@ type Client interface {
 	ListContextAwareAccessEvents(ctx context.Context, customerID string, startTime time.Time, callback func([]ContextAwareAccessEvent) error) error
 	ListAccessPolicies(ctx context.Context, parent string, callback func([]AccessPolicy) error) error
 	ListAccessLevels(ctx context.Context, policyName string, callback func([]AccessLevel) error) error
+	ListPasswordPolicies(ctx context.Context, customerID string, callback func([]PasswordPolicy) error) error
 }

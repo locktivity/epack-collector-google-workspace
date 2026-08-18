@@ -230,6 +230,49 @@
           "minimum": 0,
           "maximum": 100,
           "description": "Percentage of users with passwords that do not meet length requirements."
+        },
+        "policy": {
+          "type": "object",
+          "description": "Configured password policy, reduced to the weakest value in force anywhere in the tenant. Absent when the Policy API could not be read; absence never means permissive.",
+          "required": ["minimum_length", "maximum_length", "allowed_strength", "enforce_requirements_at_login", "allow_reuse", "expiration_days", "distinct_policies"],
+          "properties": {
+            "minimum_length": {
+              "type": "integer",
+              "minimum": 8,
+              "maximum": 100,
+              "description": "Smallest minimum password length across every policy in force."
+            },
+            "maximum_length": {
+              "type": "integer",
+              "minimum": 8,
+              "maximum": 100,
+              "description": "Largest maximum password length across every policy in force."
+            },
+            "allowed_strength": {
+              "type": "string",
+              "enum": ["strong", "weak"],
+              "description": "strong only when every policy in force requires strong passwords. weak when any policy permits weak ones."
+            },
+            "enforce_requirements_at_login": {
+              "type": "boolean",
+              "description": "True only when every policy in force binds users who already have a password. False means a non-compliant password survives until its owner changes it."
+            },
+            "allow_reuse": {
+              "type": "boolean",
+              "description": "True when any policy in force permits reusing a previous password."
+            },
+            "expiration_days": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Longest password expiration across every policy in force. 0 means passwords never expire, which is the weakest setting."
+            },
+            "distinct_policies": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of distinct password policies found. Greater than 1 means the tenant is not uniform and the values in this object describe the floor."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

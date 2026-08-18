@@ -4,7 +4,8 @@
 # must never enter an artifact. The collector emits posture metadata only:
 # never message/file/calendar/chat content, never user profile attributes beyond
 # primary email, never device serials/IMEIs, never OAuth token values, never SSO
-# signing material, never Vault hold contents. See google-workspace-fields.md
+# signing material, never Vault hold contents, never the org unit / group /
+# CEL query attached to a Policy API policy. See google-workspace-fields.md
 # "Out of scope" and implementation-plan D10/D13/D15.
 #
 # Escape hatch: prefix the call site with `// LINT-ALLOW: <reason>` if a future
@@ -15,7 +16,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 violations=$(
-  grep -rn -E '\.RawPayload|\.Body|\.Snippet|gmail\.messages\.get|calendar\.events\.get|drive\.files\.get.*alt=media|\.RecoveryEmail|\.RecoveryPhone|\.CustomSchemas|\.SerialNumber|\.Imei|\.Meid|SearchQuery|HoldContent' \
+  grep -rn -E '\.RawPayload|\.Body|\.Snippet|gmail\.messages\.get|calendar\.events\.get|drive\.files\.get.*alt=media|\.RecoveryEmail|\.RecoveryPhone|\.CustomSchemas|\.SerialNumber|\.Imei|\.Meid|SearchQuery|HoldContent|PolicyQuery' \
     internal/collector/ \
     --include='*.go' \
     | grep -v '_test.go' \

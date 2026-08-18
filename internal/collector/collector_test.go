@@ -29,6 +29,9 @@ type mockClient struct {
 	users    []googleworkspace.User
 	usersErr error
 
+	passwordPolicies    []googleworkspace.PasswordPolicy
+	passwordPoliciesErr error
+
 	roles              []googleworkspace.Role
 	rolesErr           error
 	roleAssignments    []googleworkspace.RoleAssignment
@@ -158,6 +161,16 @@ func (m *mockClient) ListChromeOSDevices(ctx context.Context, customerID string,
 		return nil
 	}
 	return callback(m.chromeDevices)
+}
+
+func (m *mockClient) ListPasswordPolicies(ctx context.Context, customerID string, callback func([]googleworkspace.PasswordPolicy) error) error {
+	if m.passwordPoliciesErr != nil {
+		return m.passwordPoliciesErr
+	}
+	if len(m.passwordPolicies) == 0 {
+		return nil
+	}
+	return callback(m.passwordPolicies)
 }
 
 func (m *mockClient) ListVaultMatters(ctx context.Context, callback func([]googleworkspace.VaultMatter) error) error {
@@ -1969,5 +1982,74 @@ func TestReportDateFor(t *testing.T) {
 				t.Fatalf("reportDateFor(%v, 1) = %q, want %q", tt.now, got, tt.want)
 			}
 		})
+	}
+}
+
+// The password policy surface is optional and must never be able to fail the
+// run or disturb another surface.
+func TestCollect_PasswordPolicyFailureLeavesEverySurfaceIntact(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+
+	newClient := func() *mockClient {
+		return &mockClient{
+			customer: googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+			usageReport: googleworkspace.CustomerUsageReport{
+				NumUsers:                           100,
+				NumUsers2SVEnrolled:                90,
+				NumUsers2SVEnforced:                100,
+				NumUsersPasswordStrengthWeak:       8,
+				NumUsersPasswordLengthNonCompliant: 4,
+				NumLockedUsers:                     3,
+			},
+			users: []googleworkspace.User{
+				{PrimaryEmail: "admin@example.com", IsAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+				{PrimaryEmail: "active@example.com", LastLoginTime: now},
+			},
+			passwordPolicies: []googleworkspace.PasswordPolicy{
+				{MinimumLength: 12, AllowedStrength: "STRONG", EnforceRequirementsAtLogin: true},
+			},
+		}
+	}
+
+	collect := func(t *testing.T, client *mockClient) *OrgPosture {
+		t.Helper()
+		c := NewWithClient(Config{AdminEmail: "admin@example.com", Now: func() time.Time { return now }}, client)
+		posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+		if err != nil {
+			t.Fatalf("Collect() error = %v", err)
+		}
+		return posture
+	}
+
+	healthy := collect(t, newClient())
+
+	broken := newClient()
+	broken.passwordPoliciesErr = &googleapi.Error{Code: 403, Errors: []googleapi.ErrorItem{{Reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}}}
+	degraded := collect(t, broken)
+
+	if healthy.Passwords.Policy == nil {
+		t.Fatal("healthy run Passwords.Policy = nil, want the policy present")
+	}
+	if degraded.Passwords.Policy != nil {
+		t.Fatalf("degraded run Passwords.Policy = %+v, want nil", degraded.Passwords.Policy)
+	}
+
+	// Everything outside the password policy must be byte-identical between the
+	// two runs. Clearing the one field that is meant to differ, plus the
+	// diagnostics that record why, should leave the artifacts equal.
+	healthy.Passwords.Policy = nil
+	healthy.Diagnostics = nil
+	degraded.Diagnostics = nil
+
+	wantJSON, err := json.Marshal(healthy)
+	if err != nil {
+		t.Fatalf("marshalling healthy posture: %v", err)
+	}
+	gotJSON, err := json.Marshal(degraded)
+	if err != nil {
+		t.Fatalf("marshalling degraded posture: %v", err)
+	}
+	if string(wantJSON) != string(gotJSON) {
+		t.Fatalf("a password policy failure changed another surface:\nhealthy  = %s\ndegraded = %s", wantJSON, gotJSON)
 	}
 }

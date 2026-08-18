@@ -35,17 +35,20 @@ func run(ctx componentsdk.CollectorContext) error {
 		AccessPolicy:    getString(cfg, "access_policy"),
 		AdminEmail:      getString(cfg, "admin_email"),
 		CredentialsJSON: ctx.Secret("GOOGLE_SERVICE_ACCOUNT_JSON"),
-		OnStatus:        ctx.Status,
-		OnProgress:      ctx.Progress,
+
+		AuthMode:                 getString(cfg, "auth_mode"),
+		WorkloadIdentityProvider: getString(cfg, "workload_identity_provider"),
+		ServiceAccount:           getString(cfg, "service_account"),
+		OnStatus:                 ctx.Status,
+		OnProgress:               ctx.Progress,
 	}
 
 	if config.AdminEmail == "" {
 		return componentsdk.NewConfigError("admin_email is required")
 	}
-	if config.CredentialsJSON == "" {
-		return componentsdk.NewConfigError("authentication required: provide GOOGLE_SERVICE_ACCOUNT_JSON")
-	}
 
+	// Every way of misconfiguring authentication is a config error: the operator
+	// changes a profile key or a workflow permission, not a Google grant.
 	c, err := collector.New(ctx.Context(), config)
 	if err != nil {
 		return componentsdk.NewConfigError("creating collector: %v", err)

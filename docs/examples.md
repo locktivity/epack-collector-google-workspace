@@ -81,7 +81,16 @@ The collector always emits the detailed artifact. The normalized artifact is inc
   },
   "passwords": {
     "weak_password_pct": 4.17,
-    "password_length_non_compliant_pct": 2.5
+    "password_length_non_compliant_pct": 2.5,
+    "policy": {
+      "minimum_length": 8,
+      "maximum_length": 100,
+      "allowed_strength": "strong",
+      "enforce_requirements_at_login": false,
+      "allow_reuse": false,
+      "expiration_days": 0,
+      "distinct_policies": 2
+    }
   },
   "apps": {
     "authorized_apps_count": 47
@@ -132,7 +141,10 @@ The collector always emits the detailed artifact. The normalized artifact is inc
   "policy": {
     "mfa_required": false,
     "mfa_required_coverage_pct": 88.33,
-    "legacy_auth_blocked": true
+    "legacy_auth_blocked": true,
+    "minimum_password_length": 8,
+    "password_strength_required": true,
+    "password_policy_enforced_for_existing_users": false
   },
   "lifecycle": {
     "suspended_pct": 8.33,

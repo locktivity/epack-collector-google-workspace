@@ -47,7 +47,16 @@ The collector always emits a detailed artifact, and conditionally emits a normal
   },
   "passwords": {
     "weak_password_pct": 4.17,
-    "password_length_non_compliant_pct": 2.5
+    "password_length_non_compliant_pct": 2.5,
+    "policy": {
+      "minimum_length": 8,
+      "maximum_length": 100,
+      "allowed_strength": "strong",
+      "enforce_requirements_at_login": false,
+      "allow_reuse": false,
+      "expiration_days": 0,
+      "distinct_policies": 2
+    }
   },
   "apps": {
     "authorized_apps_count": 47
@@ -98,7 +107,10 @@ The collector always emits a detailed artifact, and conditionally emits a normal
   "policy": {
     "mfa_required": false,
     "mfa_required_coverage_pct": 88.33,
-    "legacy_auth_blocked": true
+    "legacy_auth_blocked": true,
+    "minimum_password_length": 8,
+    "password_strength_required": true,
+    "password_policy_enforced_for_existing_users": false
   },
   "lifecycle": {
     "suspended_pct": 8.33,
@@ -120,6 +132,9 @@ The normalized artifact follows the `evidencepack/idp-posture@v1` schema, matchi
 | `mfa_phishing_resistant_pct` | `passkey_users_pct` | Passkey adoption as phishing-resistant proxy |
 | `weak_password_pct` | `weak_password_pct` | Weak password coverage comes directly from the usage report |
 | `password_policy_noncompliant_pct` | `password_length_non_compliant_pct` | Tracks users that fail the tenant password length policy |
+| `policy.minimum_password_length` | `passwords.policy.minimum_length` | Shortest password accepted anywhere in the tenant |
+| `policy.password_strength_required` | `passwords.policy.allowed_strength` | Derived: true when the tenant requires strong passwords everywhere |
+| `policy.password_policy_enforced_for_existing_users` | `passwords.policy.enforce_requirements_at_login` | Whether the rules bind users who already have a password |
 | `app_security.authorized_third_party_apps_count` | `authorized_apps_count` | OAuth-connected third-party application count |
 | `privileged_access.privileged_users_count` | `privileged_users_count` | Counts unique active privileged users only |
 | `privileged_access.super_admin_count` | `super_admin_count` | Excludes suspended and archived admins |
@@ -194,6 +209,22 @@ Password hygiene across the tenant.
 |--------|----------------|
 | `weak_password_pct` | **Credential strength.** Users with passwords classified as weak by Google. Indicates exposure to brute force and dictionary attacks. |
 | `password_length_non_compliant_pct` | **Policy compliance.** Users whose passwords don't meet the configured minimum length requirement. Non-zero values indicate policy enforcement gaps. |
+| `policy.minimum_length` | **The requirement itself.** The shortest password the tenant will accept. Without it, a zero non-compliance rate is ambiguous: it reads the same whether the minimum is 14 or Google's floor of 8. |
+| `policy.maximum_length` | **Upper bound.** Informational. |
+| `policy.allowed_strength` | **Strength requirement.** `strong` means Google rejects passwords its strength algorithm rates weak. Google Workspace has no character-class complexity setting; this is the equivalent control. |
+| `policy.enforce_requirements_at_login` | **Does the policy bind existing users?** False means a password that predates the policy survives until its owner chooses to change it. This is what makes the non-compliance percentage interpretable: with enforcement off, a zero rate is voluntary compliance rather than a forced migration. |
+| `policy.allow_reuse` | **Reuse restriction.** True means a previous password can be set again. |
+| `policy.expiration_days` | **Rotation.** 0 means passwords never expire, which is the weakest setting rather than the strongest. |
+| `policy.distinct_policies` | **Uniformity.** Greater than 1 means org units or groups have different policies and every value above describes the weakest one in force. |
+
+The policy values describe the weakest policy anywhere in the tenant, so a
+reviewer can rely on them holding everywhere. The whole `policy` object is
+omitted when it could not be read: absence never means permissive.
+
+Google does not apply these requirements to passwords set through the Directory
+API, the bulk upload tool, sync tools, or an administrator reset. That is why
+the outcome percentages stay alongside the policy rather than being replaced by
+it: the percentages observe what the policy bypasses.
 
 ### apps
 

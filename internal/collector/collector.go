@@ -30,7 +30,12 @@ func New(ctx context.Context, config Config) (*Collector, error) {
 		return nil, fmt.Errorf("admin_email is required")
 	}
 
-	client, err := googleworkspace.NewClient(ctx, config.AdminEmail, config.CredentialsJSON)
+	client, err := googleworkspace.NewClient(ctx, config.AdminEmail, googleworkspace.AuthConfig{
+		Mode:                     config.AuthMode,
+		CredentialsJSON:          config.CredentialsJSON,
+		WorkloadIdentityProvider: config.WorkloadIdentityProvider,
+		ServiceAccount:           config.ServiceAccount,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creating google workspace client: %w", err)
 	}
@@ -220,6 +225,9 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 	c.status("Scanning domain and SSO settings...")
 	posture.DomainSettings = c.scanDomainSettings(ctx, scope)
+
+	c.status("Scanning password policy...")
+	posture.Passwords.Policy = c.scanPasswordPolicy(ctx, scope)
 
 	c.status("Scanning Vault...")
 	posture.Vault = c.scanVault(ctx, scope)

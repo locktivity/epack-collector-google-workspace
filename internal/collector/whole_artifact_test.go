@@ -38,8 +38,12 @@ func fullyPopulatedClient(now time.Time) *mockClient {
 		mobileDevices:   []googleworkspace.Device{{Platform: "MOBILE", OS: "ANDROID", OwnerEmail: "user@example.com", Compliant: true, Encrypted: true, LastSync: now}},
 		samlProfiles:    []googleworkspace.SAMLProfile{{DisplayName: "Okta", IdpEntityID: "https://idp", SSOServiceURI: "https://idp.example.com/sso?x=1"}},
 		domains:         []googleworkspace.Domain{{DomainName: "example.com", Verified: true, IsPrimary: true}},
-		vaultMatters:    []googleworkspace.VaultMatter{{MatterID: "m1", Name: "Case", State: "OPEN"}},
-		vaultHolds:      map[string][]googleworkspace.VaultHold{"m1": {{HoldID: "h1", MatterID: "m1", Corpus: "MAIL", AccountCount: 1}}},
+		passwordPolicies: []googleworkspace.PasswordPolicy{
+			{MinimumLength: 12, MaximumLength: 100, AllowedStrength: "STRONG", EnforceRequirementsAtLogin: true, ExpirationDays: 90},
+			{MinimumLength: 8, MaximumLength: 64, AllowedStrength: "WEAK", AllowReuse: true},
+		},
+		vaultMatters: []googleworkspace.VaultMatter{{MatterID: "m1", Name: "Case", State: "OPEN"}},
+		vaultHolds:   map[string][]googleworkspace.VaultHold{"m1": {{HoldID: "h1", MatterID: "m1", Corpus: "MAIL", AccountCount: 1}}},
 		accessLevels: []googleworkspace.AccessLevel{
 			{Name: "p/accessLevels/corp", Title: "Corp", HasDevicePolicy: true, IPSubnetworks: []string{"203.0.113.0/24"}},
 		},

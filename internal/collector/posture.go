@@ -49,6 +49,10 @@ type Config struct {
 	AdminEmail      string `json:"admin_email"`
 	CredentialsJSON string `json:"-"`
 
+	AuthMode                 string `json:"auth_mode,omitempty"`
+	WorkloadIdentityProvider string `json:"workload_identity_provider,omitempty"`
+	ServiceAccount           string `json:"service_account,omitempty"`
+
 	OnStatus   StatusFunc       `json:"-"`
 	OnProgress ProgressFunc     `json:"-"`
 	Now        func() time.Time `json:"-"`
@@ -63,12 +67,12 @@ type OrgPosture struct {
 	Provider         string               `json:"provider"`
 	OrgDomain        string               `json:"org_domain"`
 	CustomerID       string               `json:"customer_id"`
-	Users          UserMetrics          `json:"users"`
-	Activity       *ActivityMetrics     `json:"activity,omitempty"`
-	Authentication AuthMetrics          `json:"authentication"`
-	Admins         AdminMetrics         `json:"admins"`
-	Passwords      PasswordMetrics      `json:"passwords"`
-	Apps           *AppMetrics          `json:"apps,omitempty"`
+	Users            UserMetrics          `json:"users"`
+	Activity         *ActivityMetrics     `json:"activity,omitempty"`
+	Authentication   AuthMetrics          `json:"authentication"`
+	Admins           AdminMetrics         `json:"admins"`
+	Passwords        PasswordMetrics      `json:"passwords"`
+	Apps             *AppMetrics          `json:"apps,omitempty"`
 	DeviceAccess     *DeviceAccessMetrics `json:"device_access,omitempty"`
 
 	// New surfaces (audit / internal scope expansion). Each is a pointer with
@@ -403,6 +407,30 @@ type CustomRole struct {
 type PasswordMetrics struct {
 	WeakPasswordPct               float64 `json:"weak_password_pct"`
 	PasswordLengthNonCompliantPct float64 `json:"password_length_non_compliant_pct"`
+
+	Policy *PasswordPolicyConfig `json:"policy,omitempty"`
+}
+
+// PasswordPolicyConfig is the weakest password policy in force anywhere in the
+// tenant, separated from the outcome percentages above because it states what
+// is required rather than what the population currently does.
+//
+// Google returns a policy per org unit and per group, so a tenant can define
+// several. A reviewer needs the value they can rely on everywhere, which is the
+// floor: the smallest minimum, strength and enforcement only where universally
+// true, reuse permitted if permitted anywhere. DistinctPolicies tells a reader
+// whether the tenant is uniform or whether these values are a floor.
+//
+// The whole object is absent when the Policy API could not be read, so an
+// unreadable policy is never confused with a permissive one.
+type PasswordPolicyConfig struct {
+	MinimumLength              int    `json:"minimum_length"`
+	MaximumLength              int    `json:"maximum_length"`
+	AllowedStrength            string `json:"allowed_strength"`
+	EnforceRequirementsAtLogin bool   `json:"enforce_requirements_at_login"`
+	AllowReuse                 bool   `json:"allow_reuse"`
+	ExpirationDays             int    `json:"expiration_days"`
+	DistinctPolicies           int    `json:"distinct_policies"`
 }
 
 // AppMetrics contains application security metrics (internal only).
