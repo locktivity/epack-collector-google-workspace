@@ -3,9 +3,6 @@
 Follow these steps once. Steps 1 to 3 and 5 to 6 are the same whichever
 authentication mode you use; step 4 is where they differ.
 
-For the full list of scopes, APIs, and admin roles the collector needs, see
-[Authentication](../README.md#authentication) in the README.
-
 ## Step 1: Create a Cloud project
 
 1. Open the [Google Cloud console](https://console.cloud.google.com/).
@@ -87,9 +84,29 @@ This key grants access to your tenant. Treat it as a credential.
    delegation**.
 3. Click **Add new**.
 4. Enter the **Client ID** from step 3.
-5. Add the scopes for the levels you plan to collect. The README has the table
-   and a comma-separated list you can paste.
+5. Add the scopes for the levels you plan to collect, from the table below.
 6. Click **Authorize**.
+
+| Surface | Scope | Needed at |
+|---|---|---|
+| Customer + Users | `admin.directory.user.readonly`, `admin.directory.customer.readonly` | trust |
+| Activity / usage | `admin.reports.usage.readonly` | trust |
+| Context-Aware Access (device_access) | `admin.reports.audit.readonly` | trust |
+| Password policy | `cloud-identity.policies.readonly` | trust |
+| Audit logs (admin, login, token, drive sharing) | `admin.reports.audit.readonly` | audit / internal |
+| Admin roles | `admin.directory.rolemanagement.readonly` | audit / internal |
+| Groups | `admin.directory.group.readonly`, `admin.directory.group.member.readonly`, `apps.groups.settings` | audit / internal |
+| Org units | `admin.directory.orgunit.readonly` | audit / internal |
+| Endpoint (devices) | `admin.directory.device.mobile.readonly`, `admin.directory.device.chromeos.readonly` | audit / internal |
+| Domain settings | `admin.directory.domain.readonly` | audit / internal |
+| SSO (SAML profiles) | `cloud-identity.inboundsso.readonly` | audit / internal |
+| Vault (eDiscovery) | `ediscovery.readonly` | audit / internal (requires a Vault license) |
+
+All scopes as one comma-separated list, for pasting into the admin console:
+
+```
+https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/admin.directory.customer.readonly,https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly,https://www.googleapis.com/auth/admin.directory.group.readonly,https://www.googleapis.com/auth/admin.directory.group.member.readonly,https://www.googleapis.com/auth/admin.directory.orgunit.readonly,https://www.googleapis.com/auth/admin.directory.device.mobile.readonly,https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly,https://www.googleapis.com/auth/admin.directory.domain.readonly,https://www.googleapis.com/auth/admin.reports.usage.readonly,https://www.googleapis.com/auth/admin.reports.audit.readonly,https://www.googleapis.com/auth/apps.groups.settings,https://www.googleapis.com/auth/cloud-identity.inboundsso.readonly,https://www.googleapis.com/auth/cloud-identity.policies.readonly,https://www.googleapis.com/auth/ediscovery.readonly
+```
 
 Grants are not retroactive. If you add a scope later, re-grant it here.
 
@@ -98,8 +115,14 @@ Grants are not retroactive. If you add a scope later, re-grant it here.
 Set `admin_email` to a Workspace admin account. The service account impersonates
 this user to read admin APIs.
 
-A Super Admin works for every surface. Narrower role bundles are listed in the
-README, though they have not been mapped surface by surface.
+A Super Admin covers every surface, and most customers create a dedicated
+`epack-collector@<domain>` user with Super Admin. Narrower bundles work but
+have not been mapped surface by surface:
+
+| Role | Covers |
+|---|---|
+| Reports Admin + User Management Admin + Groups Admin | Users, admins, groups, org units, devices, domains, audit logs. |
+| Vault Admin | The Vault surface. |
 
 ## Optional: Access Context Manager enrichment
 

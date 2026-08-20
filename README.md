@@ -162,66 +162,11 @@ changes: the scope grants below carry over.
 
 ## What the collector needs granted
 
-Three separate things, each failing differently. A surface that is missing any
-of them is omitted from the artifact with a diagnostic, and the run still
-succeeds.
-
-### OAuth scopes
-
-Granted in the Workspace admin console under domain-wide delegation, one at a
-time.
-
-| Surface | Scope | Needed at |
-|---|---|---|
-| Customer + Users | `admin.directory.user.readonly`, `admin.directory.customer.readonly` | trust |
-| Activity / usage | `admin.reports.usage.readonly` | trust |
-| Context-Aware Access (device_access) | `admin.reports.audit.readonly` | trust |
-| Password policy | `cloud-identity.policies.readonly` | trust |
-| Audit logs (admin, login, token, drive sharing) | `admin.reports.audit.readonly` | audit / internal |
-| Admin roles | `admin.directory.rolemanagement.readonly` | audit / internal |
-| Groups | `admin.directory.group.readonly`, `admin.directory.group.member.readonly`, `apps.groups.settings` | audit / internal |
-| Org units | `admin.directory.orgunit.readonly` | audit / internal |
-| Endpoint (devices) | `admin.directory.device.mobile.readonly`, `admin.directory.device.chromeos.readonly` | audit / internal |
-| Domain settings | `admin.directory.domain.readonly` | audit / internal |
-| SSO (SAML profiles) | `cloud-identity.inboundsso.readonly` | audit / internal |
-| Vault (eDiscovery) | `ediscovery.readonly` | audit / internal (requires a Vault license) |
-| Access Context Manager (Google Cloud) | service account IAM role `roles/accesscontextmanager.policyReader` on the organization | trust (device_access enrichment) |
-
-Grants are not retroactive. Adding a scope later requires re-granting; until
-then that surface records a scope-denied diagnostic.
-
-All scopes as one comma-separated list, for pasting into the admin console:
-
-```
-https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/admin.directory.customer.readonly,https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly,https://www.googleapis.com/auth/admin.directory.group.readonly,https://www.googleapis.com/auth/admin.directory.group.member.readonly,https://www.googleapis.com/auth/admin.directory.orgunit.readonly,https://www.googleapis.com/auth/admin.directory.device.mobile.readonly,https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly,https://www.googleapis.com/auth/admin.directory.domain.readonly,https://www.googleapis.com/auth/admin.reports.usage.readonly,https://www.googleapis.com/auth/admin.reports.audit.readonly,https://www.googleapis.com/auth/apps.groups.settings,https://www.googleapis.com/auth/cloud-identity.inboundsso.readonly,https://www.googleapis.com/auth/cloud-identity.policies.readonly,https://www.googleapis.com/auth/ediscovery.readonly
-```
-
-### Cloud-project APIs
-
-Enabled in the service account's Cloud project. A granted scope still fails with
-a `SERVICE_DISABLED` diagnostic if its API is off.
-
-| API | Needed at |
-|---|---|
-| Admin SDK API | all levels |
-| Cloud Identity API | all levels |
-| IAM Service Account Credentials API | `auth_mode: oidc` only |
-| Groups Settings API | audit / internal |
-| Google Vault API | audit / internal |
-
-### Admin roles
-
-The impersonated user needs a Workspace admin role that can read each surface.
-Scopes alone are not enough.
-
-| Role | Covers |
-|---|---|
-| Super Admin | Everything. Simplest for a dedicated collector user. |
-| Reports Admin + User Management Admin + Groups Admin | Users, admins, groups, org units, devices, domains, audit logs. |
-| Vault Admin | The Vault surface. |
-
-Most customers create a dedicated `epack-collector@<domain>` user with Super
-Admin.
+Scopes, Cloud-project APIs, and an admin role for the impersonated user. Each
+is granted in a different place, and each fails differently when missing: the
+affected surface is omitted from the artifact with a diagnostic, and the run
+still succeeds. The [configuration page](docs/configuration.md) lists all
+three at the step where each is granted.
 
 ## Development
 

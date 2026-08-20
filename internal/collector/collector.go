@@ -170,10 +170,12 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 			posture.Admins.Inventory, posture.Admins.CustomRoles = c.enrichAdminInventory(ctx, scope, userScan)
 		}
 
-		report2SVEnforcedPct := posture.Authentication.TwoSVEnforcedPct
-		posture.Authentication.TwoSVEnforcedPct = percentFloat(userScan.enforced2SVCount, userScan.activeCount)
-		if math.Abs(report2SVEnforcedPct-posture.Authentication.TwoSVEnforcedPct) >= 1 {
-			c.warn("2SV enforcement coverage differs between the lagged usage report (%.2f%%) and live Directory user flags (%.2f%%); using the live Directory value", report2SVEnforcedPct, posture.Authentication.TwoSVEnforcedPct)
+		posture.Authentication.TwoSVEnrolledPct = c.reconcileWithLive("2SV enrollment coverage", posture.Authentication.TwoSVEnrolledPct, userScan.enrolled2SVCount, userScan.activeCount)
+		posture.Authentication.TwoSVEnforcedPct = c.reconcileWithLive("2SV enforcement coverage", posture.Authentication.TwoSVEnforcedPct, userScan.enforced2SVCount, userScan.activeCount)
+
+		if posture.Activity != nil {
+			posture.Activity.Active7dPct = c.reconcileWithLive("7-day login activity", posture.Activity.Active7dPct, userScan.active7dCount, userScan.activeCount)
+			posture.Activity.Active30dPct = c.reconcileWithLive("30-day login activity", posture.Activity.Active30dPct, userScan.active30dCount, userScan.activeCount)
 		}
 	}
 
@@ -233,7 +235,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	posture.Vault = c.scanVault(ctx, scope)
 
 	if reportErr == nil {
-		c.warn("usage report metrics are as of %s; 2SV enforcement, admin counts, and inactivity reflect current Directory state and may differ slightly", reportDate)
+		c.warn("usage report metrics are as of %s; 2SV enrollment and enforcement, login activity, admin counts, and inactivity reflect current Directory state and may differ slightly", reportDate)
 	}
 	posture.Diagnostics = c.diagnostics()
 
@@ -257,7 +259,10 @@ type userScanResult struct {
 	admins             AdminMetrics
 	activeCount        int
 	inactiveCount      int
+	enrolled2SVCount   int
 	enforced2SVCount   int
+	active7dCount      int
+	active30dCount     int
 	inventory          []User
 	inventoryTruncated bool
 	inventoryDropped   int
@@ -285,7 +290,10 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 		privileged2SVEnforced int
 		activeCount           int
 		inactiveCount         int
+		enrolled2SVCount      int
 		enforced2SVCount      int
+		active7dCount         int
+		active30dCount        int
 		processed             int64
 		inventory             []User
 		adminRows             []Admin
@@ -316,6 +324,9 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 				continue
 			}
 			activeCount++
+			if user.IsEnrolledIn2Sv {
+				enrolled2SVCount++
+			}
 			if user.IsEnforcedIn2Sv {
 				enforced2SVCount++
 			}
@@ -323,6 +334,15 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 			// Inactivity: never logged in or last login before threshold.
 			if user.LastLoginMissing || user.LastLoginTime.Before(inactiveThreshold) {
 				inactiveCount++
+			}
+
+			if !user.LastLoginMissing {
+				if !user.LastLoginTime.Before(active7dThreshold) {
+					active7dCount++
+				}
+				if !user.LastLoginTime.Before(active30dThreshold) {
+					active30dCount++
+				}
 			}
 
 			// Admin counts.
@@ -378,7 +398,10 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 		},
 		activeCount:        activeCount,
 		inactiveCount:      inactiveCount,
+		enrolled2SVCount:   enrolled2SVCount,
 		enforced2SVCount:   enforced2SVCount,
+		active7dCount:      active7dCount,
+		active30dCount:     active30dCount,
 		inventory:          inventory,
 		inventoryTruncated: inventoryTruncated,
 		inventoryDropped:   inventoryDropped,
@@ -759,9 +782,9 @@ func reportDateFor(now time.Time, daysBack int) string {
 
 // applyUsageReport maps the customer usage report into the posture metric
 // blocks. Activity (7/30-day login percentages) is audit+ only; Apps
-// (authorized app count) is internal only. The per-user inactivity percentage
-// and live 2SV enforcement percentage are overwritten later from the Directory
-// user scan.
+// (authorized app count) is internal only. The per-user inactivity percentage,
+// the activity percentages, and the live 2SV enrollment and enforcement
+// percentages are overwritten later from the Directory user scan.
 func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageReport, level componentsdk.Level) {
 	posture.Users = UserMetrics{
 		Total:        int(report.NumUsers),
@@ -792,6 +815,17 @@ func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageR
 			AuthorizedAppsCount: int(report.NumAuthorizedApps),
 		}
 	}
+}
+
+// reconcileWithLive replaces a usage-report percentage with the one computed
+// from the live Directory scan, warning when the two diverge by a percentage
+// point or more.
+func (c *Collector) reconcileWithLive(metric string, reportPct float64, liveCount, liveTotal int) float64 {
+	livePct := percentFloat(liveCount, liveTotal)
+	if math.Abs(reportPct-livePct) >= 1 {
+		c.warn("%s differs between the lagged usage report (%.2f%%) and live Directory data (%.2f%%); using the live Directory value", metric, reportPct, livePct)
+	}
+	return livePct
 }
 
 func percentFloat(part, total int) float64 {

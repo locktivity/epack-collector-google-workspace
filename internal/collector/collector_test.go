@@ -388,8 +388,8 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 	}
 
 	// Authentication.
-	if posture.Authentication.TwoSVEnrolledPct != 75.0 {
-		t.Fatalf("Authentication.TwoSVEnrolledPct = %.2f, want 75.00", posture.Authentication.TwoSVEnrolledPct)
+	if posture.Authentication.TwoSVEnrolledPct != 42.86 {
+		t.Fatalf("Authentication.TwoSVEnrolledPct = %.2f, want 42.86 from live Directory enrollment", posture.Authentication.TwoSVEnrolledPct)
 	}
 	if posture.Authentication.TwoSVEnforcedPct != 42.86 {
 		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 42.86 from live Directory enforcement", posture.Authentication.TwoSVEnforcedPct)
@@ -1399,6 +1399,120 @@ func TestCollect_UsesLiveDirectoryEnforcementForTenantCoverage(t *testing.T) {
 	}
 	if posture.Diagnostics == nil || len(posture.Diagnostics.Warnings) == 0 {
 		t.Fatal("Diagnostics = nil, want live-vs-report mismatch warning")
+	}
+}
+
+// A user who enrolls inside the usage report's 2-3 day publishing lag must not
+// be counted as uncovered: the tenant rollup has to agree with the per-user
+// inventory flags collected from the same Directory snapshot.
+func TestCollect_UsesLiveDirectoryEnrollmentForTenantCoverage(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+
+	client := &mockClient{
+		customer: googleworkspace.Customer{
+			ID:            "C123",
+			PrimaryDomain: "example.com",
+		},
+		usageReport: googleworkspace.CustomerUsageReport{
+			Date:                 "2026-08-18",
+			NumUsers:             7,
+			NumUsers2SVEnrolled:  6,
+			NumUsers2SVEnforced:  6,
+			NumUsers2SVProtected: 6,
+		},
+		users: []googleworkspace.User{
+			{PrimaryEmail: "admin@example.com", IsAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user1@example.com", IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user2@example.com", IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user3@example.com", IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user4@example.com", IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user5@example.com", IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+			{PrimaryEmail: "user6@example.com", IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
+		},
+	}
+
+	c := NewWithClient(Config{
+		AdminEmail: "admin@example.com",
+		Now:        func() time.Time { return now },
+	}, client)
+
+	posture, err := c.Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if posture.Authentication.TwoSVEnrolledPct != 100.0 {
+		t.Fatalf("Authentication.TwoSVEnrolledPct = %.2f, want 100.00 from live Directory enrollment", posture.Authentication.TwoSVEnrolledPct)
+	}
+	if posture.Authentication.TwoSVEnforcedPct != 100.0 {
+		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 100.00 from live Directory enforcement", posture.Authentication.TwoSVEnforcedPct)
+	}
+	if len(posture.Users.Inventory) != 7 {
+		t.Fatalf("len(Users.Inventory) = %d, want 7", len(posture.Users.Inventory))
+	}
+	for _, row := range posture.Users.Inventory {
+		if !row.TwoSVEnrolled || !row.TwoSVEnforced {
+			t.Fatalf("inventory row %s disagrees with the tenant rollup: %+v", row.PrimaryEmail, row)
+		}
+	}
+	if !hasWarning(posture, "2SV enrollment coverage differs") {
+		t.Fatalf("expected enrollment live-vs-report divergence warning; warnings = %v", warningsOf(posture))
+	}
+}
+
+// A user who logs in inside the usage report's publishing lag must not be
+// counted as inactive in the activity rollup while their inventory row shows
+// active_7d true from the same Directory snapshot.
+func TestCollect_UsesLiveDirectoryActivityForTenantCoverage(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+
+	client := &mockClient{
+		customer: googleworkspace.Customer{
+			ID:            "C123",
+			PrimaryDomain: "example.com",
+		},
+		usageReport: googleworkspace.CustomerUsageReport{
+			Date:           "2026-08-18",
+			NumUsers:       3,
+			Num7DayLogins:  1,
+			Num30DayLogins: 2,
+		},
+		users: []googleworkspace.User{
+			{PrimaryEmail: "admin@example.com", IsAdmin: true, LastLoginTime: now},
+			{PrimaryEmail: "user1@example.com", LastLoginTime: now.AddDate(0, 0, -2)},
+			{PrimaryEmail: "user2@example.com", LastLoginTime: now.AddDate(0, 0, -6)},
+		},
+	}
+
+	c := NewWithClient(Config{
+		AdminEmail: "admin@example.com",
+		Now:        func() time.Time { return now },
+	}, client)
+
+	posture, err := c.Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if posture.Activity == nil {
+		t.Fatal("Activity = nil, want activity metrics at audit")
+	}
+	if posture.Activity.Active7dPct != 100.0 {
+		t.Fatalf("Activity.Active7dPct = %.2f, want 100.00 from live Directory last-login times", posture.Activity.Active7dPct)
+	}
+	if posture.Activity.Active30dPct != 100.0 {
+		t.Fatalf("Activity.Active30dPct = %.2f, want 100.00 from live Directory last-login times", posture.Activity.Active30dPct)
+	}
+	for _, row := range posture.Users.Inventory {
+		if !row.Active7d || !row.Active30d {
+			t.Fatalf("inventory row %s disagrees with the activity rollup: %+v", row.PrimaryEmail, row)
+		}
+	}
+	if !hasWarning(posture, "7-day login activity differs") {
+		t.Fatalf("expected 7-day activity divergence warning; warnings = %v", warningsOf(posture))
+	}
+	if !hasWarning(posture, "30-day login activity differs") {
+		t.Fatalf("expected 30-day activity divergence warning; warnings = %v", warningsOf(posture))
 	}
 }
 

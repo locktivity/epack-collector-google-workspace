@@ -33,9 +33,8 @@ Default is `trust` when the key is absent or empty; unknown values fall back to
 `collected_at_level` field.
 
 `audit` and `internal` require additional OAuth scopes, and the impersonation
-user must hold an admin role able to read each surface. See
-[Required OAuth scopes](../README.md#required-oauth-scopes) and
-[Required impersonation-user admin role](../README.md#required-impersonation-user-admin-role).
+user must hold an admin role able to read each surface. The scope table and
+role options are on the [configuration page](configuration.md#step-5-authorize-scopes-in-google-workspace).
 When a scope is missing, a role is insufficient, or a feature is not licensed,
 the affected surface degrades rather than failing the run: scope and role
 denials are recorded under `diagnostics.permission_errors`, and licensing gaps,
@@ -60,8 +59,9 @@ emit zeroed and a diagnostic is recorded; the rest of the artifact still ships.
 ### Activity (`activity`) and Authentication (`authentication`)
 
 - **trust**: 7-day / 30-day active percentages; 2SV enrolled / enforced /
-  protected coverage, passkey-user coverage, security-key total. 2SV enforcement
-  is reconciled against live Directory flags.
+  protected coverage, passkey-user coverage, security-key total. 2SV enrollment
+  and enforcement and the activity percentages are reconciled against live
+  Directory data.
 
 ### Admins (`admins`)
 
