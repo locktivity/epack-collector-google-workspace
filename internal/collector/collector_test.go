@@ -1857,6 +1857,34 @@ func TestCollect_ReturnsCustomerErrors(t *testing.T) {
 	}
 }
 
+func TestCollect_CustomerRoleDeniedNamesSuperAdmin(t *testing.T) {
+	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{
+		customerErr: &googleapi.Error{Code: 403, Errors: []googleapi.ErrorItem{{Reason: "INSUFFICIENT_PERMISSIONS"}}},
+	})
+
+	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err == nil {
+		t.Fatal("Collect() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "admin_email must be a Super Admin") {
+		t.Errorf("Collect() error = %q, want Super Admin guidance", err)
+	}
+}
+
+func TestCollect_CustomerScopeDeniedNamesScope(t *testing.T) {
+	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{
+		customerErr: &googleapi.Error{Code: 403, Errors: []googleapi.ErrorItem{{Reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}}},
+	})
+
+	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err == nil {
+		t.Fatal("Collect() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "admin.directory.customer.readonly") {
+		t.Errorf("Collect() error = %q, want scope guidance", err)
+	}
+}
+
 func TestCollect_DegradesOnUsageReportError(t *testing.T) {
 	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{
 		customer: googleworkspace.Customer{

@@ -116,7 +116,14 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	c.status(fmt.Sprintf("Resolving Google Workspace customer %s...", customerKey))
 	customer, err := c.client.GetCustomer(ctx, customerKey)
 	if err != nil {
-		return nil, fmt.Errorf("getting customer metadata: %w", err)
+		switch {
+		case isRoleInsufficient(err):
+			return nil, fmt.Errorf("getting customer metadata: admin_email must be a Super Admin. Only a Super Admin can read the tenant record, admin role assignments, and the password policy. The granted read-only scopes still limit what the collector reads: %w", err)
+		case isScopeDenied(err):
+			return nil, fmt.Errorf("getting customer metadata: the admin.directory.customer.readonly scope is not granted to the service account: %w", err)
+		default:
+			return nil, fmt.Errorf("getting customer metadata: %w", err)
+		}
 	}
 	if customer.PrimaryDomain == "" {
 		return nil, fmt.Errorf("customer %s did not return a primary domain", customerKey)
@@ -137,7 +144,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	// that has data, or exhaust our attempts.
 	report, reportDate, reportErr := c.fetchUsageReport(ctx, customer.ID, collectedAt)
 	if reportErr != nil {
-		c.warnSurfaceScan("usage_report", "admin.reports.usage.readonly", "Reports Admin (or Super Admin)", reportErr)
+		c.warnSurfaceScan("usage_report", "admin.reports.usage.readonly", "a role with the Reports privilege (or Super Admin)", reportErr)
 		report = googleworkspace.CustomerUsageReport{}
 	}
 
@@ -186,7 +193,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	c.status("Scanning Context-Aware Access audit events for device-state deny evidence...")
 	deviceAccess, err := c.scanDeviceAccess(ctx, scope)
 	if err != nil {
-		c.warnSurfaceScan("device_access", "admin.reports.audit.readonly", "Reports Admin (or Super Admin)", err)
+		c.warnSurfaceScan("device_access", "admin.reports.audit.readonly", "a role with the Reports privilege (or Super Admin)", err)
 	} else {
 		posture.DeviceAccess = &deviceAccess
 		if deviceAccess.ManagedDeviceRequirementEvidenced {
@@ -476,7 +483,7 @@ func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, s
 		return nil
 	})
 	if err != nil {
-		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "User Management Admin (or Super Admin)", err)
+		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
 		return rows, nil
 	}
 
@@ -488,7 +495,7 @@ func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, s
 		return nil
 	})
 	if err != nil {
-		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "User Management Admin (or Super Admin)", err)
+		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
 		return rows, customRoles
 	}
 

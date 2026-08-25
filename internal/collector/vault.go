@@ -28,7 +28,7 @@ func (c *Collector) scanVault(ctx context.Context, scope scanScope) *Vault {
 			c.warnFeatureNotLicensed("vault", "Vault (eDiscovery)")
 			return &Vault{Licensed: false}
 		}
-		c.warnSurfaceScan("vault", "ediscovery.readonly", "Vault Admin (or Super Admin)", err)
+		c.warnSurfaceScan("vault", "ediscovery.readonly", "a custom role with Vault privileges (or Super Admin)", err)
 		return nil
 	}
 

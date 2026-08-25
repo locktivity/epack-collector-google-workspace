@@ -112,17 +112,20 @@ Grants are not retroactive. If you add a scope later, re-grant it here.
 
 ## Step 6: Choose the admin user to impersonate
 
-Set `admin_email` to a Workspace admin account. The service account impersonates
-this user to read admin APIs.
+Set `admin_email` to a Super Admin account. The service account impersonates
+this user to read admin APIs. The first call in every run reads the tenant
+record, and only a Super Admin can read it. Admin role assignments and the
+password policy also require Super Admin. A custom role does not work around
+this: Google returns a permission error on these calls even for a custom role
+with every copyable privilege.
 
-A Super Admin covers every surface, and most customers create a dedicated
-`epack-collector@<domain>` user with Super Admin. Narrower bundles work but
-have not been mapped surface by surface:
+Least privilege comes from the granted scopes, not from the admin role. The
+service account can only read what the read-only scopes from step 5 allow, no
+matter which user it impersonates. Most customers create a dedicated
+`epack-collector@<domain>` user with Super Admin.
 
-| Role | Covers |
-|---|---|
-| Reports Admin + User Management Admin + Groups Admin | Users, admins, groups, org units, devices, domains, audit logs. |
-| Vault Admin | The Vault surface. |
+If the impersonated user has a narrower admin role, the run stops at the
+tenant record with an error that says so.
 
 ## Optional: Access Context Manager enrichment
 
@@ -161,9 +164,10 @@ app assignment and monitor-mode details are not fully exposed by API.
 
 ## Troubleshooting
 
-A missing scope, API, or role never fails the run. The affected surface is
-omitted and a diagnostic says which of the three is missing, because each is
-fixed in a different console.
+A missing scope, API, or role never fails the run, except for the tenant
+record: it is read first, requires a Super Admin, and stops the run when
+denied (step 6). Any other affected surface is omitted and a diagnostic says
+which of the three is missing, because each is fixed in a different console.
 
 ### The run fails to start
 
@@ -186,6 +190,8 @@ something is collected, so setup mistakes appear here rather than at startup.
 | `iamcredentials.googleapis.com` | Enable the IAM Service Account Credentials API |
 | `the workload identity exchange was rejected` | Check the pool, the provider's attribute condition, and `roles/iam.workloadIdentityUser` |
 | 401 Unauthorized | Confirm `admin_email` is a real admin, delegation is enabled, and the Client ID matches |
+| `admin_email must be a Super Admin` | Impersonate a Super Admin (step 6); narrower admin roles cannot read the tenant record |
+| `admin.directory.customer.readonly scope is not granted` | Re-check the scope list from step 5 in the admin console |
 
 ### A surface is missing from the artifact
 

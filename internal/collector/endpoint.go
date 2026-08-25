@@ -30,7 +30,7 @@ func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint
 	}
 	chromeErr := c.client.ListChromeOSDevices(ctx, scope.customerID, gather)
 	if chromeErr != nil {
-		c.warnSurfaceScan("endpoint:chromeos", "admin.directory.device.chromeos.readonly", "Mobile Admin (or Super Admin)", chromeErr)
+		c.warnSurfaceScan("endpoint:chromeos", "admin.directory.device.chromeos.readonly", "Services Admin (or Super Admin)", chromeErr)
 	}
 	if mobileErr != nil && chromeErr != nil {
 		return nil

@@ -23,7 +23,7 @@ func (c *Collector) fetchAuditEvents(ctx context.Context, surface, customerID, a
 			c.warn("surface %s: audit-log data not yet available for the requested window; returning partial results", surface)
 			return events, true
 		}
-		c.warnSurfaceScan(surface, "admin.reports.audit.readonly", "Reports Admin (or Super Admin)", err)
+		c.warnSurfaceScan(surface, "admin.reports.audit.readonly", "a role with the Reports privilege (or Super Admin)", err)
 		return nil, false
 	}
 	return events, true
