@@ -112,20 +112,9 @@ Grants are not retroactive. If you add a scope later, re-grant it here.
 
 ## Step 6: Choose the admin user to impersonate
 
-Set `admin_email` to a Super Admin account. The service account impersonates
-this user to read admin APIs. The first call in every run reads the tenant
-record, and only a Super Admin can read it. Admin role assignments and the
-password policy also require Super Admin. A custom role does not work around
-this: Google returns a permission error on these calls even for a custom role
-with every copyable privilege.
-
-Least privilege comes from the granted scopes, not from the admin role. The
-service account can only read what the read-only scopes from step 5 allow, no
-matter which user it impersonates. Most customers create a dedicated
-`epack-collector@<domain>` user with Super Admin.
-
-If the impersonated user has a narrower admin role, the run stops at the
-tenant record with an error that says so.
+Set `admin_email` to a Super Admin account; several of the admin API reads
+require one. The read-only scopes from step 5 still limit what the collector
+can read. A common setup is a dedicated `epack-collector@<domain>` user.
 
 ## Optional: Access Context Manager enrichment
 
@@ -190,7 +179,7 @@ something is collected, so setup mistakes appear here rather than at startup.
 | `iamcredentials.googleapis.com` | Enable the IAM Service Account Credentials API |
 | `the workload identity exchange was rejected` | Check the pool, the provider's attribute condition, and `roles/iam.workloadIdentityUser` |
 | 401 Unauthorized | Confirm `admin_email` is a real admin, delegation is enabled, and the Client ID matches |
-| `admin_email must be a Super Admin` | Impersonate a Super Admin (step 6); narrower admin roles cannot read the tenant record |
+| `admin_email must be a Super Admin` | Impersonate a Super Admin (step 6); narrower admin roles, including custom ones, cannot read the tenant record |
 | `admin.directory.customer.readonly scope is not granted` | Re-check the scope list from step 5 in the admin console |
 
 ### A surface is missing from the artifact
