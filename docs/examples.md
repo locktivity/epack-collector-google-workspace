@@ -41,9 +41,9 @@ collectors:
 
 ## Sample Output
 
-The collector always emits the detailed artifact. The normalized artifact is included when the usage report contains data (omitted for new tenants or delayed reports).
+The collector always emits the detailed artifact. The normalized artifact is included when the tenant's primary domain can be read, which takes a Super Admin.
 
-### `artifacts/google-workspace.json`
+### `artifacts/google-workspace.details.json`
 
 ```json
 {
@@ -57,6 +57,7 @@ The collector always emits the detailed artifact. The normalized artifact is inc
     "total": 120,
     "suspended": 10,
     "archived": 5,
+    "active": 105,
     "locked_pct": 0.83,
     "inactive_pct": 4.76,
     "inactive_days": 90
@@ -92,6 +93,10 @@ The collector always emits the detailed artifact. The normalized artifact is inc
       "distinct_policies": 2
     }
   },
+  "sign_in": {
+    "web_session_duration_max_minutes": 20160,
+    "less_secure_apps_allowed": false
+  },
   "apps": {
     "authorized_apps_count": 47
   },
@@ -122,33 +127,36 @@ The collector always emits the detailed artifact. The normalized artifact is inc
   "provider": "google_workspace",
   "org_domain": "example.com",
   "user_security": {
-    "mfa_coverage_pct": 90.0,
-    "mfa_phishing_resistant_pct": 12.5,
-    "inactive_pct": 4.76,
-    "locked_out_pct": 0.83,
-    "weak_password_pct": 4.17,
-    "password_policy_noncompliant_pct": 2.5
-  },
-  "app_security": {
-    "authorized_third_party_apps_count": 47
+    "users_present": true,
+    "user_count": 105,
+    "inactive_user_count": 5,
+    "mfa_coverage_pct": 92,
+    "mfa_phishing_resistant_pct": 12,
+    "inactive_pct": 5,
+    "locked_out_pct": 1,
+    "weak_password_pct": 5,
+    "password_policy_noncompliant_pct": 3
   },
   "privileged_access": {
+    "privileged_users_present": true,
     "privileged_users_count": 7,
     "super_admin_count": 3,
-    "privileged_mfa_coverage_pct": 85.71,
-    "standing_privileged_users_count": 7
+    "privileged_mfa_user_count": 6,
+    "privileged_mfa_coverage_pct": 85
   },
   "policy": {
     "mfa_required": false,
-    "mfa_required_coverage_pct": 88.33,
-    "legacy_auth_blocked": true,
-    "minimum_password_length": 8,
-    "password_strength_required": true,
-    "password_policy_enforced_for_existing_users": false
+    "mfa_required_user_count": 93,
+    "mfa_required_coverage_pct": 88,
+    "session_lifetime_max_min": 20160
   },
   "lifecycle": {
-    "suspended_pct": 8.33,
-    "archived_pct": 4.17
+    "accounts_present": true,
+    "account_count": 120,
+    "suspended_account_count": 10,
+    "archived_account_count": 5,
+    "suspended_pct": 9,
+    "archived_pct": 5
   },
   "device_access": {
     "managed_device_required": true

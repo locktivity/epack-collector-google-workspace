@@ -226,7 +226,7 @@ func TestNewDelegatedTokenSourceCachesAndTargetsGoogle(t *testing.T) {
 
 	source := newDelegatedTokenSource(context.Background(), signer,
 		"collector@p.iam.gserviceaccount.com", "admin@example.com",
-		[]string{"https://www.googleapis.com/auth/admin.directory.user.readonly"})
+		[]string{"https://www.googleapis.com/auth/admin.directory.user.readonly"}, client)
 
 	if source == nil {
 		t.Fatal("newDelegatedTokenSource() returned no usable token source")
@@ -411,7 +411,7 @@ func TestGitHubOIDCSupplierErrorsCarryNoRequestToken(t *testing.T) {
 // The key path is what every current user runs. It must reach the same delegated
 // JWT config it does today, with no signing service involved.
 func TestAuthenticatorKeyPathUnchanged(t *testing.T) {
-	auth, err := newAuthenticator(context.Background(), AuthConfig{CredentialsJSON: keyFixture})
+	auth, err := newAuthenticator(context.Background(), AuthConfig{CredentialsJSON: keyFixture}, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("newAuthenticator() error = %v", err)
 	}
@@ -480,14 +480,14 @@ func TestAuthenticatorMintsLazily(t *testing.T) {
 		t.Fatalf("iamcredentials.NewService() error = %v", err)
 	}
 
-	auth := &authenticator{config: oidcConfig(), signer: signer}
+	auth := &authenticator{ctx: context.Background(), config: oidcConfig(), signer: signer, transport: fake.Transport}
 	for _, scope := range []string{
 		"https://www.googleapis.com/auth/admin.directory.user.readonly",
 		"https://www.googleapis.com/auth/cloud-identity.policies.readonly",
 		"https://www.googleapis.com/auth/ediscovery.readonly",
 	} {
-		if _, err := auth.client(context.Background(), "admin@example.com", []string{scope}); err != nil {
-			t.Fatalf("client(%s) error = %v", scope, err)
+		if _, err := auth.source("admin@example.com", []string{scope}); err != nil {
+			t.Fatalf("source(%s) error = %v", scope, err)
 		}
 	}
 

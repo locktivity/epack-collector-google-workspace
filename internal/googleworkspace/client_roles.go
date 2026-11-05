@@ -12,9 +12,12 @@ import (
 func (c *APIClient) ListRoles(ctx context.Context, customerID string, callback func([]Role) error) error {
 	call := c.dirRoles.Roles.List(customerID).
 		MaxResults(maxRolesPerPage).
-		Fields(googleapi.Field("nextPageToken,items(roleId,roleName,roleDescription,isSystemRole,isSuperAdminRole,rolePrivileges)"))
+		Fields(googleapi.Field("kind,nextPageToken,items(roleId,roleName,roleDescription,isSystemRole,isSuperAdminRole,rolePrivileges)"))
 
-	return call.Pages(ctx, func(resp *admin.Roles) error {
+	err := call.Pages(named(ctx, OpRolesList), func(resp *admin.Roles) error {
+		if resp.Kind == "" {
+			return invalidResponse("admin roles page has no kind")
+		}
 		roles := make([]Role, 0, len(resp.Items))
 		for _, role := range resp.Items {
 			if role == nil {
@@ -34,15 +37,19 @@ func (c *APIClient) ListRoles(ctx context.Context, customerID string, callback f
 		}
 		return callback(roles)
 	})
+	return listError(OpRolesList, "listing admin roles", err)
 }
 
 // ListRoleAssignments lists role grants for the customer.
 func (c *APIClient) ListRoleAssignments(ctx context.Context, customerID string, callback func([]RoleAssignment) error) error {
 	call := c.dirRoles.RoleAssignments.List(customerID).
 		MaxResults(maxRoleAssignmentsPerPage).
-		Fields(googleapi.Field("nextPageToken,items(assignedTo,roleId,scopeType,orgUnitId)"))
+		Fields(googleapi.Field("kind,nextPageToken,items(assignedTo,roleId,scopeType,orgUnitId)"))
 
-	return call.Pages(ctx, func(resp *admin.RoleAssignments) error {
+	err := call.Pages(named(ctx, OpRoleAssignmentsList), func(resp *admin.RoleAssignments) error {
+		if resp.Kind == "" {
+			return invalidResponse("role assignments page has no kind")
+		}
 		assignments := make([]RoleAssignment, 0, len(resp.Items))
 		for _, a := range resp.Items {
 			if a == nil {
@@ -60,4 +67,5 @@ func (c *APIClient) ListRoleAssignments(ctx context.Context, customerID string, 
 		}
 		return callback(assignments)
 	})
+	return listError(OpRoleAssignmentsList, "listing role assignments", err)
 }

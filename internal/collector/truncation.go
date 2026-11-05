@@ -1,17 +1,30 @@
 package collector
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+
+	"github.com/locktivity/epack/componentsdk"
+)
 
 // truncateAndWarn caps items with Truncate and, on cap-hit, records a diagnostic
-// naming the surface. label is a short noun phrase for the warning (e.g.
-// "user inventory", "login audit-log event slice"). Callers that expose
-// truncated/dropped on the artifact use the returned values; others discard them.
-func truncateAndWarn[T any](c *Collector, items []T, limit int, label string, less func(a, b T) bool) (kept []T, dropped int, truncated bool) {
+// naming the surface and a too_large partial gap on the list at pointer. label
+// is a short noun phrase for the warning (e.g. "user inventory", "login
+// audit-log event slice"). Callers that expose truncated/dropped on the
+// artifact use the returned values; others discard them.
+func truncateAndWarn[T any](c *Collector, items []T, limit int, label, pointer string, less func(a, b T) bool) (kept []T, dropped int, truncated bool) {
+	c.gaps.rec.Helper()
 	kept, dropped, truncated = Truncate(items, limit, less)
 	if truncated {
 		c.warn("%s truncated to %d (dropped %d)", label, limit, dropped)
+		c.gaps.partial(dropped, failed(tooLarge(label, limit)), pointer)
 	}
 	return kept, dropped, truncated
+}
+
+// tooLarge is the error for a list capped at limit rows.
+func tooLarge(label string, limit int) error {
+	return componentsdk.CodeError(componentsdk.CodeTooLarge, fmt.Errorf("the %s is capped at %d rows", label, limit))
 }
 
 // Truncate applies a per-surface cap to a slice. If len(items) is within the cap,

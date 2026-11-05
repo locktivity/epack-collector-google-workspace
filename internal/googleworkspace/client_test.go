@@ -15,7 +15,11 @@ import (
 	admin "google.golang.org/api/admin/directory/v1"
 	reports "google.golang.org/api/admin/reports/v1"
 	cloudidentity "google.golang.org/api/cloudidentity/v1"
+	groupssettings "google.golang.org/api/groupssettings/v1"
 	"google.golang.org/api/option"
+	vault "google.golang.org/api/vault/v1"
+
+	"github.com/locktivity/epack/componentsdk"
 )
 
 func TestAPIClientGetCustomer(t *testing.T) {
@@ -26,6 +30,7 @@ func TestAPIClientGetCustomer(t *testing.T) {
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
+			"kind":           "admin#directory#customer",
 			"id":             "C123",
 			"customerDomain": "example.com",
 		})
@@ -55,6 +60,7 @@ func TestAPIClientGetCustomerUsageReport(t *testing.T) {
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
+			"kind": "admin#reports#usageReports",
 			"usageReports": []map[string]any{
 				{
 					"date": "2026-04-07",
@@ -134,6 +140,7 @@ func TestAPIClientGetCustomerUsageReport(t *testing.T) {
 func TestAPIClientGetCustomerUsageReportEmpty(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
+			"kind":         "admin#reports#usageReports",
 			"usageReports": []map[string]any{},
 		})
 	})
@@ -144,6 +151,9 @@ func TestAPIClientGetCustomerUsageReportEmpty(t *testing.T) {
 	}
 	if report.NumUsers != 0 {
 		t.Fatalf("NumUsers = %d, want 0", report.NumUsers)
+	}
+	if len(report.Missing) != len(reportParameterNames) {
+		t.Fatalf("Missing = %v, want every requested parameter listed", report.Missing)
 	}
 }
 
@@ -167,6 +177,7 @@ func TestAPIClientListUsersPaginatesAndMaps(t *testing.T) {
 		switch requests {
 		case 1:
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"kind": "admin#directory#users",
 				"users": []map[string]any{
 					{
 						"primaryEmail":    "a@example.com",
@@ -183,6 +194,7 @@ func TestAPIClientListUsersPaginatesAndMaps(t *testing.T) {
 				t.Fatalf("pageToken = %q, want page-2", got)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"kind": "admin#directory#users",
 				"users": []map[string]any{
 					{
 						"primaryEmail":     "b@example.com",
@@ -263,6 +275,7 @@ func TestAPIClientListContextAwareAccessEventsPaginatesAndMaps(t *testing.T) {
 		switch requests {
 		case 1:
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"kind": "admin#reports#activities",
 				"items": []map[string]any{
 					{
 						"actor": map[string]any{
@@ -293,6 +306,7 @@ func TestAPIClientListContextAwareAccessEventsPaginatesAndMaps(t *testing.T) {
 				t.Fatalf("pageToken = %q, want page-2", got)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"kind": "admin#reports#activities",
 				"items": []map[string]any{
 					{
 						"actor": map[string]any{
@@ -563,7 +577,32 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *APIClient {
 		t.Fatalf("cloudidentity.NewService() error = %v", err)
 	}
 
-	return NewClientWithServices(dirService, reportsService, accessContextService, cloudIdentityService)
+	groupSettingsService, err := groupssettings.NewService(
+		context.Background(),
+		option.WithHTTPClient(httpClient),
+		option.WithEndpoint("https://unit.test/"),
+	)
+	if err != nil {
+		t.Fatalf("groupssettings.NewService() error = %v", err)
+	}
+
+	vaultService, err := vault.NewService(
+		context.Background(),
+		option.WithHTTPClient(httpClient),
+		option.WithEndpoint("https://unit.test/"),
+	)
+	if err != nil {
+		t.Fatalf("vault.NewService() error = %v", err)
+	}
+
+	return NewClientWithServices(Services{
+		Directory:     dirService,
+		Reports:       reportsService,
+		AccessContext: accessContextService,
+		GroupSettings: groupSettingsService,
+		CloudIdentity: cloudIdentityService,
+		Vault:         vaultService,
+	})
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -721,5 +760,140 @@ func TestAPIClientListPasswordPoliciesDefaultsCustomer(t *testing.T) {
 	}
 	if called {
 		t.Fatal("callback ran for an empty policy list, want it skipped")
+	}
+}
+
+// Google answers a list call with its kind even when the list is empty, so a
+// body without one is not a list response and must not read as an empty list.
+func TestAPIClientRejectsAListWithoutKind(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	called := false
+	err := client.ListUsers(context.Background(), "", func([]User) error {
+		called = true
+		return nil
+	})
+	if code := componentsdk.Classify(err); code != componentsdk.CodeInvalidResponse {
+		t.Fatalf("ListUsers() error = %v (code %s), want invalid_response", err, code)
+	}
+	if called {
+		t.Fatal("the callback ran for a body that is not a users page")
+	}
+}
+
+// The Reports API takes no my_customer alias: leaving customerId out names
+// the caller's own customer.
+func TestAPIClientReportsCallsLeaveOutTheCustomerAlias(t *testing.T) {
+	var customerIDs []string
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["customerId"]; ok {
+			customerIDs = append(customerIDs, r.URL.Query().Get("customerId"))
+		}
+		_, _ = w.Write([]byte(`{"kind":"admin#reports#usageReports"}`))
+	})
+
+	if _, err := client.GetCustomerUsageReport(context.Background(), DefaultCustomerKey, "2026-04-07"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ListActivities(context.Background(), DefaultCustomerKey, "login", []string{"login_failure"}, time.Now(), func([]AuditEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetCustomerUsageReport(context.Background(), "C123", "2026-04-07"); err != nil {
+		t.Fatal(err)
+	}
+	if len(customerIDs) != 1 || customerIDs[0] != "C123" {
+		t.Fatalf("customerId sent = %v, want only the resolved C123", customerIDs)
+	}
+}
+
+func TestAPIClientUsageReportListsParametersItLeftOut(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"kind":"admin#reports#usageReports","usageReports":[{"parameters":[{"name":"accounts:num_users","intValue":"5"}]}]}`))
+	})
+
+	report, err := client.GetCustomerUsageReport(context.Background(), "C123", "2026-04-07")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.NumUsers != 5 || len(report.Missing) != len(reportParameterNames)-1 {
+		t.Fatalf("NumUsers = %d, Missing = %v; want 5 and every other parameter", report.NumUsers, report.Missing)
+	}
+	for _, name := range report.Missing {
+		if name == "accounts:num_users" {
+			t.Fatal("a reported parameter is listed as missing")
+		}
+	}
+}
+
+// A request filtered on an event name gets back each activity that holds the
+// event, with all of the activity's events.
+func TestAPIClientListActivitiesKeepsOnlyTheRequestedEvents(t *testing.T) {
+	activity := func(id string, names ...string) map[string]any {
+		events := make([]map[string]any, 0, len(names))
+		for _, name := range names {
+			events = append(events, map[string]any{"name": name})
+		}
+		return map[string]any{
+			"actor":  map[string]any{"email": "admin@example.com"},
+			"id":     map[string]any{"time": "2026-04-06T10:00:00.000Z", "applicationName": "admin", "uniqueQualifier": id},
+			"events": events,
+		}
+	}
+	both := activity("1", "SUSPEND_USER", "GRANT_ADMIN_PRIVILEGE")
+	tests := []struct {
+		name      string
+		byEvent   map[string][]map[string]any
+		requested []string
+		want      []string
+	}{
+		{
+			name:      "an event the caller did not ask for is dropped",
+			byEvent:   map[string][]map[string]any{"SUSPEND_USER": {activity("1", "SUSPEND_USER", "MOVE_USER_TO_ORG_UNIT")}},
+			requested: []string{"SUSPEND_USER"},
+			want:      []string{"SUSPEND_USER"},
+		},
+		{
+			name:      "an activity with only the requested event is kept whole",
+			byEvent:   map[string][]map[string]any{"SUSPEND_USER": {activity("1", "SUSPEND_USER")}},
+			requested: []string{"SUSPEND_USER"},
+			want:      []string{"SUSPEND_USER"},
+		},
+		{
+			name:      "each event of an activity returned for two requests is listed once",
+			byEvent:   map[string][]map[string]any{"GRANT_ADMIN_PRIVILEGE": {both}, "SUSPEND_USER": {both}},
+			requested: []string{"GRANT_ADMIN_PRIVILEGE", "SUSPEND_USER"},
+			want:      []string{"GRANT_ADMIN_PRIVILEGE", "SUSPEND_USER"},
+		},
+		{
+			name: "two activities with one requested event each are both kept",
+			byEvent: map[string][]map[string]any{
+				"GRANT_ADMIN_PRIVILEGE": {activity("1", "GRANT_ADMIN_PRIVILEGE")},
+				"SUSPEND_USER":          {activity("2", "SUSPEND_USER")},
+			},
+			requested: []string{"GRANT_ADMIN_PRIVILEGE", "SUSPEND_USER"},
+			want:      []string{"GRANT_ADMIN_PRIVILEGE", "SUSPEND_USER"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"kind": "admin#reports#activities", "items": tt.byEvent[r.URL.Query().Get("eventName")]})
+			})
+			var got []string
+			err := client.ListActivities(context.Background(), "C123", "admin", tt.requested, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), func(events []AuditEvent) error {
+				for _, e := range events {
+					got = append(got, e.Name)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("ListActivities() error = %v", err)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("events = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

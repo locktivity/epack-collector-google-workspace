@@ -3,7 +3,9 @@ package googleworkspace
 import (
 	"context"
 	"fmt"
+	"net/http"
 
+	"golang.org/x/oauth2"
 	accesscontextmanager "google.golang.org/api/accesscontextmanager/v1"
 	admin "google.golang.org/api/admin/directory/v1"
 	reports "google.golang.org/api/admin/reports/v1"
@@ -56,6 +58,9 @@ type APIClient struct {
 	cloudIdentity         *cloudidentity.Service // cloud-identity.inboundsso.readonly
 	cloudIdentityPolicies *cloudidentity.Service // cloud-identity.policies.readonly
 	vault                 *vault.Service
+
+	// signIn is the user directory scope's token source.
+	signIn oauth2.TokenSource
 }
 
 // newReadonlyService builds a Google API service authenticated for one subject
@@ -64,33 +69,40 @@ type APIClient struct {
 // delegated to a Workspace user). newService is the package's NewService
 // constructor (e.g. vault.NewService). It requests only the given scopes, so the
 // resulting client's token is rejected by DWD only if one of those exact scopes
-// is ungranted.
+// is ungranted. It also returns the token source, which SignIn uses for the
+// user directory scope.
 //
 // The authenticator decides how the credential becomes a token, so both a
 // service account key and a workload identity federation credential reach every
-// surface the same way.
+// surface the same way, and every request goes out through the SDK transport.
 func newReadonlyService[T any](
 	ctx context.Context,
 	auth *authenticator,
 	subject string,
 	newService func(context.Context, ...option.ClientOption) (*T, error),
 	scopes ...string,
-) (*T, error) {
-	httpClient, err := auth.client(ctx, subject, scopes)
+) (*T, oauth2.TokenSource, error) {
+	src, err := auth.source(subject, scopes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return newService(ctx, option.WithHTTPClient(httpClient))
+	svc, err := newService(ctx, option.WithHTTPClient(auth.authorized(src)))
+	if err != nil {
+		return nil, nil, err
+	}
+	return svc, src, nil
 }
 
 // NewClient authenticates and returns a client. Each directory service is
 // scoped to a single OAuth scope so a missing domain-wide-delegation grant
-// degrades one surface rather than the whole run.
+// degrades one surface rather than the whole run. transport is the one every
+// request, token requests included, goes out through: the collector passes the
+// SDK's.
 //
 // Authenticates with a service account key, or by exchanging the runner's own
 // OIDC identity when the profile selects that mode.
-func NewClient(ctx context.Context, adminEmail string, authConfig AuthConfig) (*APIClient, error) {
-	auth, err := newAuthenticator(ctx, authConfig)
+func NewClient(ctx context.Context, adminEmail string, authConfig AuthConfig, transport http.RoundTripper) (*APIClient, error) {
+	auth, err := newAuthenticator(ctx, authConfig, transport)
 	if err != nil {
 		return nil, err
 	}
@@ -99,13 +111,17 @@ func NewClient(ctx context.Context, adminEmail string, authConfig AuthConfig) (*
 	// short-circuits on the first error (all share the same credentials, so a
 	// parse failure would affect every call identically).
 	var dirErr error
+	var signIn oauth2.TokenSource
 	adminSvc := func(scope string) *admin.Service {
 		if dirErr != nil {
 			return nil
 		}
-		svc, err := newReadonlyService(ctx, auth, adminEmail, admin.NewService, scope)
+		svc, src, err := newReadonlyService(ctx, auth, adminEmail, admin.NewService, scope)
 		if err != nil {
 			dirErr = err
+		}
+		if scope == admin.AdminDirectoryUserReadonlyScope {
+			signIn = src
 		}
 		return svc
 	}
@@ -124,52 +140,77 @@ func NewClient(ctx context.Context, adminEmail string, authConfig AuthConfig) (*
 	if dirErr != nil {
 		return nil, fmt.Errorf("creating directory service: %w", dirErr)
 	}
+	c.signIn = signIn
 
-	if c.reports, err = newReadonlyService(ctx, auth, adminEmail, reports.NewService, reports.AdminReportsUsageReadonlyScope); err != nil {
+	if c.reports, _, err = newReadonlyService(ctx, auth, adminEmail, reports.NewService, reports.AdminReportsUsageReadonlyScope); err != nil {
 		return nil, fmt.Errorf("creating usage reports service: %w", err)
 	}
-	if c.auditReports, err = newReadonlyService(ctx, auth, adminEmail, reports.NewService, reports.AdminReportsAuditReadonlyScope); err != nil {
+	if c.auditReports, _, err = newReadonlyService(ctx, auth, adminEmail, reports.NewService, reports.AdminReportsAuditReadonlyScope); err != nil {
 		return nil, fmt.Errorf("creating audit reports service: %w", err)
 	}
 	// Access Context Manager is an org-level Google Cloud API, not delegated to
 	// a Workspace user, so it impersonates no subject.
-	if c.accessContext, err = newReadonlyService(ctx, auth, "", accesscontextmanager.NewService, accesscontextmanager.CloudPlatformScope); err != nil {
+	if c.accessContext, _, err = newReadonlyService(ctx, auth, "", accesscontextmanager.NewService, accesscontextmanager.CloudPlatformScope); err != nil {
 		return nil, fmt.Errorf("creating access context manager service: %w", err)
 	}
-	if c.groupSettings, err = newReadonlyService(ctx, auth, adminEmail, groupssettings.NewService, groupssettings.AppsGroupsSettingsScope); err != nil {
+	if c.groupSettings, _, err = newReadonlyService(ctx, auth, adminEmail, groupssettings.NewService, groupssettings.AppsGroupsSettingsScope); err != nil {
 		return nil, fmt.Errorf("creating group settings service: %w", err)
 	}
-	if c.cloudIdentity, err = newReadonlyService(ctx, auth, adminEmail, cloudidentity.NewService, cloudidentity.CloudIdentityInboundssoReadonlyScope); err != nil {
+	if c.cloudIdentity, _, err = newReadonlyService(ctx, auth, adminEmail, cloudidentity.NewService, cloudidentity.CloudIdentityInboundssoReadonlyScope); err != nil {
 		return nil, fmt.Errorf("creating cloud identity service: %w", err)
 	}
-	if c.cloudIdentityPolicies, err = newReadonlyService(ctx, auth, adminEmail, cloudidentity.NewService, cloudidentity.CloudIdentityPoliciesReadonlyScope); err != nil {
+	if c.cloudIdentityPolicies, _, err = newReadonlyService(ctx, auth, adminEmail, cloudidentity.NewService, cloudidentity.CloudIdentityPoliciesReadonlyScope); err != nil {
 		return nil, fmt.Errorf("creating cloud identity policies service: %w", err)
 	}
-	if c.vault, err = newReadonlyService(ctx, auth, adminEmail, vault.NewService, vault.EdiscoveryReadonlyScope); err != nil {
+	if c.vault, _, err = newReadonlyService(ctx, auth, adminEmail, vault.NewService, vault.EdiscoveryReadonlyScope); err != nil {
 		return nil, fmt.Errorf("creating vault service: %w", err)
 	}
 
 	return c, nil
 }
 
-// NewClientWithServices creates a client backed by existing services (for
-// testing). The single directory service is shared by every directory surface;
-// tests point it at one fake transport.
-func NewClientWithServices(directory *admin.Service, reportsService *reports.Service, accessContextService *accesscontextmanager.Service, cloudIdentityPoliciesService *cloudidentity.Service) *APIClient {
-	return &APIClient{
-		dirCustomer:     directory,
-		dirUsers:        directory,
-		dirRoles:        directory,
-		dirGroups:       directory,
-		dirGroupMembers: directory,
-		dirOrgUnits:     directory,
-		dirMobile:       directory,
-		dirChromeOS:     directory,
-		dirDomains:      directory,
-		reports:         reportsService,
-		auditReports:    reportsService,
-		accessContext:   accessContextService,
+// SignIn mints the token for the user directory scope, which every run reads.
+// A credential Google rejects, or a delegation grant without that scope, fails
+// here, before any surface is collected.
+func (c *APIClient) SignIn(context.Context) error {
+	if c.signIn == nil {
+		return nil
+	}
+	_, err := c.signIn.Token()
+	return err
+}
 
-		cloudIdentityPolicies: cloudIdentityPoliciesService,
+// Services holds existing services for NewClientWithServices.
+type Services struct {
+	Directory     *admin.Service
+	Reports       *reports.Service
+	AccessContext *accesscontextmanager.Service
+	GroupSettings *groupssettings.Service
+	CloudIdentity *cloudidentity.Service
+	Vault         *vault.Service
+}
+
+// NewClientWithServices creates a client backed by existing services (for
+// testing). The single directory service is shared by every directory surface,
+// and the Cloud Identity service by SAML profiles and policies; tests point
+// them at one fake transport. SignIn mints nothing.
+func NewClientWithServices(s Services) *APIClient {
+	return &APIClient{
+		dirCustomer:           s.Directory,
+		dirUsers:              s.Directory,
+		dirRoles:              s.Directory,
+		dirGroups:             s.Directory,
+		dirGroupMembers:       s.Directory,
+		dirOrgUnits:           s.Directory,
+		dirMobile:             s.Directory,
+		dirChromeOS:           s.Directory,
+		dirDomains:            s.Directory,
+		reports:               s.Reports,
+		auditReports:          s.Reports,
+		accessContext:         s.AccessContext,
+		groupSettings:         s.GroupSettings,
+		cloudIdentity:         s.CloudIdentity,
+		cloudIdentityPolicies: s.CloudIdentity,
+		vault:                 s.Vault,
 	}
 }

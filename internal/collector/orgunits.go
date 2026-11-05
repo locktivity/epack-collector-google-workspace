@@ -11,8 +11,10 @@ import (
 // scanOrgUnits collects the OrgUnits surface (audit and above). Audit emits the
 // count, max hierarchy depth, and the per-OU inventory (path, parent,
 // description, user count from the user scan, and the block-inheritance
-// policy-override flag). Returns nil at trust or on scope / role denial.
-func (c *Collector) scanOrgUnits(ctx context.Context, scope scanScope, usersByOU map[string]int) *OrgUnits {
+// policy-override flag). Returns nil at trust or when the list cannot be read.
+// The user counts come from the user scan, so they are left out when it
+// failed.
+func (c *Collector) scanOrgUnits(ctx context.Context, scope scanScope, usersByOU map[string]int, usersErr error) *OrgUnits {
 	if !scope.level.AtLeast(componentsdk.LevelAudit) {
 		return nil
 	}
@@ -20,6 +22,7 @@ func (c *Collector) scanOrgUnits(ctx context.Context, scope scanScope, usersByOU
 	units, err := c.client.ListOrgUnits(ctx, scope.customerID)
 	if err != nil {
 		c.warnSurfaceScan("org_units", "admin.directory.orgunit.readonly", "Groups Admin (or Super Admin)", err)
+		c.gaps.leaveOut(failed(err), "/org_units")
 		return nil
 	}
 
@@ -32,13 +35,16 @@ func (c *Collector) scanOrgUnits(ctx context.Context, scope scanScope, usersByOU
 			result.MaxDepth = depth
 		}
 		if collectInventory {
-			inventory = append(inventory, OrgUnit{
+			row := OrgUnit{
 				Path:             ou.Path,
 				ParentPath:       ou.ParentPath,
 				Description:      ou.Description,
-				UserCount:        usersByOU[ou.Path],
 				BlockInheritance: ou.BlockInheritance,
-			})
+			}
+			if usersErr == nil {
+				row.UserCount = intPtr(usersByOU[ou.Path])
+			}
+			inventory = append(inventory, row)
 		}
 	}
 
@@ -46,6 +52,11 @@ func (c *Collector) scanOrgUnits(ctx context.Context, scope scanScope, usersByOU
 		slices.SortFunc(inventory, func(a, b OrgUnit) int {
 			return strings.Compare(a.Path, b.Path)
 		})
+		if usersErr != nil {
+			for i := range inventory {
+				c.gaps.leaveOut(failed(usersErr), itemPointer("/org_units/inventory", i, "user_count"))
+			}
+		}
 		result.Inventory = inventory
 	}
 	return result

@@ -2,6 +2,7 @@ package googleworkspace
 
 import (
 	"context"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -15,9 +16,12 @@ func (c *APIClient) ListMobileDevices(ctx context.Context, customerID string, ca
 	call := c.dirMobile.Mobiledevices.List(customerID).
 		MaxResults(maxDevicesPerPage).
 		Projection("BASIC").
-		Fields(googleapi.Field("nextPageToken,mobiledevices(type,os,model,email,status,lastSync,encryptionStatus,deviceCompromisedStatus,devicePasswordStatus)"))
+		Fields(googleapi.Field("kind,nextPageToken,mobiledevices(type,os,model,email,status,lastSync,encryptionStatus,deviceCompromisedStatus,devicePasswordStatus)"))
 
-	return call.Pages(ctx, func(resp *admin.MobileDevices) error {
+	err := call.Pages(named(ctx, OpMobileDevicesList), func(resp *admin.MobileDevices) error {
+		if resp.Kind == "" {
+			return invalidResponse("mobile devices page has no kind")
+		}
 		devices := make([]Device, 0, len(resp.Mobiledevices))
 		for _, d := range resp.Mobiledevices {
 			if d == nil {
@@ -48,6 +52,7 @@ func (c *APIClient) ListMobileDevices(ctx context.Context, customerID string, ca
 		}
 		return callback(devices)
 	})
+	return listError(OpMobileDevicesList, "listing mobile devices", err)
 }
 
 // mobileOS returns a normalized OS family for a mobile device. The directory
@@ -75,9 +80,12 @@ func (c *APIClient) ListChromeOSDevices(ctx context.Context, customerID string, 
 	call := c.dirChromeOS.Chromeosdevices.List(customerID).
 		MaxResults(maxDevicesPerPage).
 		Projection("BASIC").
-		Fields(googleapi.Field("nextPageToken,chromeosdevices(osVersion,model,annotatedUser,status,lastSync)"))
+		Fields(googleapi.Field("kind,nextPageToken,chromeosdevices(osVersion,model,annotatedUser,status,lastSync)"))
 
-	return call.Pages(ctx, func(resp *admin.ChromeOsDevices) error {
+	err := call.Pages(named(ctx, OpChromeOSDevicesList), func(resp *admin.ChromeOsDevices) error {
+		if resp.Kind == "" {
+			return invalidResponse("ChromeOS devices page has no kind")
+		}
 		devices := make([]Device, 0, len(resp.Chromeosdevices))
 		for _, d := range resp.Chromeosdevices {
 			if d == nil {
@@ -88,7 +96,7 @@ func (c *APIClient) ListChromeOSDevices(ctx context.Context, customerID string, 
 				OS:         "CHROME_OS",
 				OSVersion:  d.OsVersion,
 				Model:      d.Model,
-				OwnerEmail: d.AnnotatedUser,
+				OwnerEmail: annotatedEmail(d.AnnotatedUser),
 				Status:     d.Status,
 				Compliant:  strings.EqualFold(d.Status, "active"),
 				Encrypted:  true, // Chrome OS storage is always encrypted.
@@ -105,4 +113,17 @@ func (c *APIClient) ListChromeOSDevices(ctx context.Context, customerID string, 
 		}
 		return callback(devices)
 	})
+	return listError(OpChromeOSDevicesList, "listing ChromeOS devices", err)
+}
+
+// annotatedEmail returns a Chrome OS device's annotatedUser when it is an
+// email address, and "" otherwise. annotatedUser is a note an admin writes
+// about the device's user, so it can hold any text.
+func annotatedEmail(note string) string {
+	note = strings.TrimSpace(note)
+	addr, err := mail.ParseAddress(note)
+	if err != nil || addr.Address != note {
+		return ""
+	}
+	return note
 }

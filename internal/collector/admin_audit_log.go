@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/locktivity/epack/componentsdk"
@@ -60,7 +61,8 @@ var securityRelevantAdminEvents = map[string]string{
 
 // scanAdminAuditLog collects the Admin audit log surface (security-relevant
 // admin actions, 7-day window). Audit emits counts by category; internal adds
-// the event slice. Returns nil (omitted) at trust or on scope / role denial.
+// the event slice. Returns nil (omitted) at trust or when the events cannot be
+// read.
 func (c *Collector) scanAdminAuditLog(ctx context.Context, scope scanScope) *AdminAuditLog {
 	if !scope.level.AtLeast(componentsdk.LevelAudit) {
 		return nil
@@ -70,6 +72,9 @@ func (c *Collector) scanAdminAuditLog(ctx context.Context, scope scanScope) *Adm
 	for name := range securityRelevantAdminEvents {
 		eventNames = append(eventNames, name)
 	}
+	// Sorted, so the requests and the event slice come in the same order on
+	// every run.
+	slices.Sort(eventNames)
 
 	since := scope.collectedAt.AddDate(0, 0, -AuditLogWindowDays)
 	events, ok := c.fetchAuditEvents(ctx, "admin_audit_log", scope.customerID, "admin", eventNames, since)
@@ -94,7 +99,7 @@ func (c *Collector) scanAdminAuditLog(ctx context.Context, scope scanScope) *Adm
 	}
 
 	if includeEvents {
-		result.Events, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, slice, AuditEventsCap, "admin audit-log event slice", func(a, b AuditLogEvent) bool {
+		result.Events, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, slice, AuditEventsCap, "admin audit-log event slice", "/admin_audit_log/events", func(a, b AuditLogEvent) bool {
 			return a.Time > b.Time
 		})
 	}

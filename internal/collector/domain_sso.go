@@ -12,8 +12,8 @@ import (
 // emits the SSO-configured flag, SAML-profile and verified-domain counts, and
 // per-profile and per-domain inventories; internal adds the SSO service host
 // (host only). Signing certs, metadata XML, and full SSO URLs are never
-// emitted. The SAML and domain halves degrade independently on scope / role
-// denial. Returns nil at trust or if both halves fail.
+// emitted. The SAML and domain halves are left out independently when they
+// cannot be read. Returns nil at trust or if both halves fail.
 func (c *Collector) scanDomainSettings(ctx context.Context, scope scanScope) *DomainSettings {
 	if !scope.level.AtLeast(componentsdk.LevelAudit) {
 		return nil
@@ -32,8 +32,10 @@ func (c *Collector) scanDomainSettings(ctx context.Context, scope scanScope) *Do
 	if samlErr != nil {
 		c.warnSurfaceScan("domain_settings:sso", "cloud-identity.inboundsso.readonly", "Super Admin", samlErr)
 	} else {
-		result.SAMLProfileCount = len(profiles)
-		result.SSOConfigured = len(profiles) > 0
+		count := len(profiles)
+		configured := count > 0
+		result.SAMLProfileCount = &count
+		result.SSOConfigured = &configured
 		if collectInventory {
 			for _, p := range profiles {
 				row := SAMLProfileSummary{DisplayName: p.DisplayName, IdpEntityID: p.IdpEntityID}
@@ -49,9 +51,10 @@ func (c *Collector) scanDomainSettings(ctx context.Context, scope scanScope) *Do
 	if domainErr != nil {
 		c.warnSurfaceScan("domain_settings:domains", "admin.directory.domain.readonly", "Super Admin", domainErr)
 	} else {
+		verified := 0
 		for _, d := range domains {
 			if d.Verified {
-				result.VerifiedDomainCount++
+				verified++
 			}
 			if d.IsPrimary {
 				result.PrimaryDomain = d.DomainName
@@ -64,10 +67,18 @@ func (c *Collector) scanDomainSettings(ctx context.Context, scope scanScope) *Do
 				})
 			}
 		}
+		result.VerifiedDomainCount = &verified
 	}
 
 	if samlErr != nil && domainErr != nil {
+		c.gaps.leaveOut(failed(samlErr), "/domain_settings")
 		return nil
+	}
+	if samlErr != nil {
+		c.gaps.leaveOut(failed(samlErr), "/domain_settings/sso_configured", "/domain_settings/saml_profile_count", "/domain_settings/saml_profiles")
+	}
+	if domainErr != nil {
+		c.gaps.leaveOut(failed(domainErr), "/domain_settings/verified_domain_count", "/domain_settings/primary_domain", "/domain_settings/domains")
 	}
 	return result
 }

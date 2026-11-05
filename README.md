@@ -4,8 +4,9 @@ Google Workspace identity and security posture collector for [epack](https://git
 
 It collects tenant-wide posture metrics from the Admin SDK Reports API and Directory API and emits:
 
-- a detailed Google Workspace artifact at `artifacts/google-workspace.json` (always)
-- a normalized `evidencepack/idp-posture@v1` artifact at `artifacts/google-workspace.idp-posture.json` (when usage report data is available)
+- a detailed Google Workspace artifact at `artifacts/google-workspace.details.json` (always)
+- a normalized `evidencepack/idp-posture@v1` artifact at `artifacts/google-workspace.idp-posture.json` (when the tenant's primary domain can be read)
+- a collector result at `artifacts/google-workspace.collector-result.json` (always), which lists each value the collector could not read and why, and the API calls it made
 
 See [docs/overview.md](docs/overview.md), [docs/configuration.md](docs/configuration.md), [docs/examples.md](docs/examples.md), and [docs/schema/v1.0.0.json](docs/schema/v1.0.0.json).
 
@@ -19,6 +20,7 @@ Trust-level (always):
 - passkey adoption and security key counts
 - unique privileged user counts plus admin 2SV enrollment and enforcement
 - password hygiene (weak passwords, length non-compliance) and the configured password policy (minimum length, strength requirement, whether it binds existing users)
+- the longest web session and whether less secure apps are allowed, from the Policy API
 - authorized third-party app count
 - Context-Aware Access device-state deny evidence when audit logs are available
 
@@ -56,6 +58,20 @@ collectors:
 > OAuth scopes (below) AND ensuring the impersonation user holds the right admin
 > role will produce partial collection: the affected surfaces emit a diagnostic
 > warning and are skipped, rather than failing the run.
+
+## Values left out and exit codes
+
+A value the collector cannot read is left out of the artifact as `null` or an
+absent field, never written as `0`, `false`, or an empty list. The collector
+result names each one with a code, such as `permission_denied` for a missing
+scope or role, and the run still succeeds. A percentage over no users is
+`null` too.
+
+The run fails only when it cannot start: invalid configuration exits 2, and a
+failed sign-in exits 3 with the code `auth_failed` when Google rejects the key
+or the assertion. A failed sign-in also exits 3, with `permission_denied`, when
+the delegation grant lacks `admin.directory.user.readonly`, and exits 2, with
+`config_invalid`, when Google answers the token request with `invalid_request`.
 
 ## Quick start
 
@@ -164,9 +180,16 @@ changes: the scope grants below carry over.
 
 Scopes, Cloud-project APIs, and an admin role for the impersonated user. Each
 is granted in a different place, and each fails differently when missing: the
-affected surface is omitted from the artifact with a diagnostic, and the run
-still succeeds. The [configuration page](docs/configuration.md) lists all
-three at the step where each is granted.
+affected surface is omitted from the artifact with a diagnostic and a gap in
+the collector result, and the run still succeeds. The
+[configuration page](docs/configuration.md) lists all three at the step where
+each is granted.
+
+Only a Super Admin can read the tenant record. With a narrower admin role,
+`customer_id` and `org_domain` are null, the normalized artifact is not
+emitted, and the Drive external-share count is left out, since telling an
+external recipient from an internal one takes the primary domain. Everything
+else is collected under the customer key.
 
 ## Development
 
@@ -180,7 +203,10 @@ make sdk-run
 
 ## Testing
 
-Unit tests cover collector aggregation, Reports API parsing, and Directory API client behavior:
+Unit tests cover collector aggregation, Reports API parsing, and Directory API client behavior.
+`internal/collector/collectortest_test.go` runs the collector against canned API responses with the
+epack `collectortest` kit, which injects failures into every API call and checks that each value
+keeps its value or is left out with a matching code:
 
 ```bash
 go test ./...

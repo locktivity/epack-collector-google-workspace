@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	_ "time/tzdata" // Embed timezone database for minimal container environments.
 
 	"google.golang.org/api/googleapi"
 
@@ -22,20 +23,17 @@ type Collector struct {
 	now              func() time.Time
 	warnings         []string
 	permissionErrors []string
+	gaps             *gapLog
 }
 
-// New creates a collector backed by the Google Admin SDK.
+// New creates a collector backed by the Google Admin SDK. Every request goes
+// out through config.HTTPClient's transport.
 func New(ctx context.Context, config Config) (*Collector, error) {
 	if config.AdminEmail == "" {
 		return nil, fmt.Errorf("admin_email is required")
 	}
 
-	client, err := googleworkspace.NewClient(ctx, config.AdminEmail, googleworkspace.AuthConfig{
-		Mode:                     config.AuthMode,
-		CredentialsJSON:          config.CredentialsJSON,
-		WorkloadIdentityProvider: config.WorkloadIdentityProvider,
-		ServiceAccount:           config.ServiceAccount,
-	})
+	client, err := googleworkspace.NewClient(ctx, config.AdminEmail, config.authConfig(), config.HTTPClient.Transport)
 	if err != nil {
 		return nil, fmt.Errorf("creating google workspace client: %w", err)
 	}
@@ -58,6 +56,16 @@ func newCollector(config Config, client googleworkspace.Client) *Collector {
 		client: client,
 		config: config,
 		now:    now,
+		gaps:   newGapLog(config.Recorder),
+	}
+}
+
+func (config Config) authConfig() googleworkspace.AuthConfig {
+	return googleworkspace.AuthConfig{
+		Mode:                     config.AuthMode,
+		CredentialsJSON:          config.CredentialsJSON,
+		WorkloadIdentityProvider: config.WorkloadIdentityProvider,
+		ServiceAccount:           config.ServiceAccount,
 	}
 }
 
@@ -107,83 +115,57 @@ func (c *Collector) customerKey() string {
 // depth of collection (trust / audit / internal). Unknown or empty levels are
 // treated as LevelTrust by the SDK reader; callers should not pre-validate.
 // See the README for the per-surface field availability per level.
+//
+// Only a failed sign-in fails the collection. Every value a later call could
+// not read is left out of the posture with a gap in config.Recorder.
 func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*OrgPosture, error) {
 	customerKey := c.customerKey()
 	c.warnings = nil
 	c.permissionErrors = nil
+	c.gaps = newGapLog(c.config.Recorder)
 
-	// Step 1: Resolve customer metadata.
-	c.status(fmt.Sprintf("Resolving Google Workspace customer %s...", customerKey))
-	customer, err := c.client.GetCustomer(ctx, customerKey)
-	if err != nil {
-		switch {
-		case isRoleInsufficient(err):
-			return nil, fmt.Errorf("getting customer metadata: admin_email must be a Super Admin. Only a Super Admin can read the tenant record, admin role assignments, and the password policy. The granted read-only scopes still limit what the collector reads: %w", err)
-		case isScopeDenied(err):
-			return nil, fmt.Errorf("getting customer metadata: the admin.directory.customer.readonly scope is not granted to the service account: %w", err)
-		default:
-			return nil, fmt.Errorf("getting customer metadata: %w", err)
-		}
-	}
-	if customer.PrimaryDomain == "" {
-		return nil, fmt.Errorf("customer %s did not return a primary domain", customerKey)
+	c.status("Signing in to Google Workspace...")
+	if err := c.client.SignIn(ctx); err != nil {
+		return nil, fmt.Errorf("signing in as %s: %w", c.config.AdminEmail, err)
 	}
 
 	collectedAt := c.now().UTC()
+	posture := NewOrgPosture(collectedAt)
+	posture.CollectedAtLevel = string(level)
 	scope := scanScope{
-		customerKey:   customerKey,
-		customerID:    customer.ID,
-		primaryDomain: customer.PrimaryDomain,
-		collectedAt:   collectedAt,
-		level:         level,
+		customerKey: customerKey,
+		customerID:  customerKey,
+		collectedAt: collectedAt,
+		level:       level,
 	}
+
+	// Step 1: Resolve customer metadata. Only a Super Admin can read the
+	// tenant record, so the run goes on without it: the customer key stands
+	// in for the customer ID in the calls below, which all accept it.
+	c.status(fmt.Sprintf("Resolving Google Workspace customer %s...", customerKey))
+	c.resolveCustomer(ctx, posture, &scope)
 
 	// Step 2: Fetch usage report from Reports API.
 	// Google Workspace usage reports have a 2-3 day lag. We try progressively
 	// older dates starting from yesterday (Pacific Time) until we find one
 	// that has data, or exhaust our attempts.
-	report, reportDate, reportErr := c.fetchUsageReport(ctx, customer.ID, collectedAt)
+	report, reportDate, reportErr := c.fetchUsageReport(ctx, scope.customerID, collectedAt)
 	if reportErr != nil {
 		c.warnSurfaceScan("usage_report", "admin.reports.usage.readonly", "a role with the Reports privilege (or Super Admin)", reportErr)
-		report = googleworkspace.CustomerUsageReport{}
 	}
+	c.applyUsageReport(posture, report, reportDate, reportErr, level)
 
-	posture := NewOrgPosture(customer.PrimaryDomain, customer.ID, reportDate, collectedAt)
-	posture.CollectedAtLevel = string(level)
-
-	if reportErr == nil && report.NumUsers == 0 {
-		c.warn("usage report for %s returned no user data; tenant may be too new for report generation", reportDate)
-	}
-
-	applyUsageReport(posture, report, level)
-
-	// Step 3: List users for admin counts and 90-day inactivity.
+	// Step 3: List users for admin counts, 2SV coverage, and inactivity.
 	c.status("Scanning users for admin status and inactivity...")
 	userScan, scanErr := c.scanUsers(ctx, scope)
 	if scanErr != nil {
 		c.warnSurfaceScan("users", "admin.directory.user.readonly", "User Management Admin (or Super Admin)", scanErr)
-		userScan = userScanResult{}
 	}
-	posture.Admins = userScan.admins
-	posture.Users.Inventory = userScan.inventory
-	posture.Users.TruncatedInventory = userScan.inventoryTruncated
-	posture.Users.TruncatedInventoryDropped = userScan.inventoryDropped
+	c.applyUserScan(posture, report, reportErr, userScan, scanErr, level)
 
-	if scanErr == nil {
-		posture.Users.InactivePct = percentFloat(userScan.inactiveCount, userScan.activeCount)
-
-		if level.AtLeast(componentsdk.LevelAudit) {
-			c.status("Scanning admin roles and assignments...")
-			posture.Admins.Inventory, posture.Admins.CustomRoles = c.enrichAdminInventory(ctx, scope, userScan)
-		}
-
-		posture.Authentication.TwoSVEnrolledPct = c.reconcileWithLive("2SV enrollment coverage", posture.Authentication.TwoSVEnrolledPct, userScan.enrolled2SVCount, userScan.activeCount)
-		posture.Authentication.TwoSVEnforcedPct = c.reconcileWithLive("2SV enforcement coverage", posture.Authentication.TwoSVEnforcedPct, userScan.enforced2SVCount, userScan.activeCount)
-
-		if posture.Activity != nil {
-			posture.Activity.Active7dPct = c.reconcileWithLive("7-day login activity", posture.Activity.Active7dPct, userScan.active7dCount, userScan.activeCount)
-			posture.Activity.Active30dPct = c.reconcileWithLive("30-day login activity", posture.Activity.Active30dPct, userScan.active30dCount, userScan.activeCount)
-		}
+	if level.AtLeast(componentsdk.LevelAudit) {
+		c.status("Scanning admin roles and assignments...")
+		c.enrichAdminInventory(ctx, scope, posture, userScan, scanErr)
 	}
 
 	// Step 4: Query Context-Aware Access deny events for evidence that Google
@@ -194,6 +176,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	deviceAccess, err := c.scanDeviceAccess(ctx, scope)
 	if err != nil {
 		c.warnSurfaceScan("device_access", "admin.reports.audit.readonly", "a role with the Reports privilege (or Super Admin)", err)
+		c.gaps.leaveOut(failed(err), "/device_access")
 	} else {
 		posture.DeviceAccess = &deviceAccess
 		if deviceAccess.ManagedDeviceRequirementEvidenced {
@@ -204,9 +187,11 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	if posture.DeviceAccess != nil && c.hasAccessContextManagerConfig() {
 		c.status("Scanning Access Context Manager access-level config...")
 		acm, err := c.scanAccessContextManager(ctx, scope)
-		if err != nil {
+		switch {
+		case err != nil:
 			c.warn("access context manager scan failed; config enrichment omitted: %v", err)
-		} else {
+			c.gaps.leaveOut(failed(err), "/device_access/access_context_manager")
+		case acm != nil:
 			posture.DeviceAccess.AccessContextManager = acm
 			if acm.CustomAccessLevelsCount > 0 {
 				c.warn("access context manager includes %d custom access levels; device-policy summary only analyzes basic access levels", acm.CustomAccessLevelsCount)
@@ -221,7 +206,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	posture.Groups = c.scanGroups(ctx, scope)
 
 	c.status("Scanning org units...")
-	posture.OrgUnits = c.scanOrgUnits(ctx, scope, userScan.usersByOU)
+	posture.OrgUnits = c.scanOrgUnits(ctx, scope, userScan.usersByOU, scanErr)
 
 	c.status("Scanning managed devices...")
 	posture.Endpoint = c.scanEndpoint(ctx, scope)
@@ -238,6 +223,9 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	c.status("Scanning password policy...")
 	posture.Passwords.Policy = c.scanPasswordPolicy(ctx, scope)
 
+	c.status("Scanning session and sign-in settings...")
+	posture.SignIn = c.scanSignInPolicy(ctx, scope)
+
 	c.status("Scanning Vault...")
 	posture.Vault = c.scanVault(ctx, scope)
 
@@ -248,6 +236,36 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 	c.status("Collection complete")
 	return posture, nil
+}
+
+// resolveCustomer reads the tenant record into posture. When it cannot be
+// read, the customer ID, the primary domain, and what depends on the domain
+// are left out, and scope keeps the customer key.
+func (c *Collector) resolveCustomer(ctx context.Context, posture *OrgPosture, scope *scanScope) {
+	customer, err := c.client.GetCustomer(ctx, scope.customerKey)
+	if err != nil {
+		c.warnSurfaceScan("customer", "admin.directory.customer.readonly", "Super Admin", err)
+		c.gaps.leaveOut(failed(err), "/customer_id", "/org_domain")
+		return
+	}
+	if customer.ID == "" {
+		c.warn("customer %s did not return a customer ID", scope.customerKey)
+		c.gaps.leaveOut(failed(invalidResponse("customer %s did not return a customer ID", scope.customerKey)), "/customer_id")
+	} else {
+		posture.CustomerID = &customer.ID
+		scope.customerID = customer.ID
+	}
+	if customer.PrimaryDomain == "" {
+		c.warn("customer %s did not return a primary domain", scope.customerKey)
+		c.gaps.leaveOut(failed(invalidResponse("customer %s did not return a primary domain", scope.customerKey)), "/org_domain")
+	} else {
+		posture.OrgDomain = &customer.PrimaryDomain
+		scope.primaryDomain = customer.PrimaryDomain
+	}
+}
+
+func invalidResponse(format string, args ...any) error {
+	return componentsdk.CodeError(componentsdk.CodeInvalidResponse, fmt.Errorf(format, args...))
 }
 
 // scanScope carries the per-collection parameters shared by the surface
@@ -263,19 +281,23 @@ type scanScope struct {
 }
 
 type userScanResult struct {
-	admins             AdminMetrics
-	activeCount        int
-	inactiveCount      int
-	enrolled2SVCount   int
-	enforced2SVCount   int
-	active7dCount      int
-	active30dCount     int
-	inventory          []User
-	inventoryTruncated bool
-	inventoryDropped   int
-	adminRows          []Admin        // per-privileged-user rows (audit+), aligned with adminIDs
-	adminIDs           []string       // directory user IDs, for role-assignment correlation
-	usersByOU          map[string]int // user count per org-unit path, for the OrgUnits surface
+	superAdmins           int
+	delegatedAdmins       int
+	privilegedTotal       int
+	privileged2SVEnrolled int
+	privileged2SVEnforced int
+	activeCount           int
+	inactiveCount         int
+	enrolled2SVCount      int
+	enforced2SVCount      int
+	active7dCount         int
+	active30dCount        int
+	inventory             []User
+	inventoryTruncated    bool
+	inventoryDropped      int
+	adminRows             []Admin        // per-privileged-user rows (audit+), aligned with adminIDs
+	adminIDs              []string       // directory user IDs, for role-assignment correlation
+	usersByOU             map[string]int // user count per org-unit path, for the OrgUnits surface
 }
 
 type deviceAccessScanResult struct {
@@ -392,29 +414,27 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 	var inventoryDropped int
 	var inventoryTruncated bool
 	if collectInventory {
-		inventory, inventoryDropped, inventoryTruncated = truncateAndWarn(c, inventory, UsersCap, "user inventory", lessUserRow)
+		inventory, inventoryDropped, inventoryTruncated = truncateAndWarn(c, inventory, UsersCap, "user inventory", "/users/inventory", lessUserRow)
 	}
 
 	return userScanResult{
-		admins: AdminMetrics{
-			PrivilegedUsersCount:          privilegedTotal,
-			SuperAdminCount:               superAdmins,
-			DelegatedAdminCount:           delegatedAdmins,
-			PrivilegedUsers2SVEnrolledPct: percentFloat(privileged2SVEnrolled, privilegedTotal),
-			PrivilegedUsers2SVEnforcedPct: percentFloat(privileged2SVEnforced, privilegedTotal),
-		},
-		activeCount:        activeCount,
-		inactiveCount:      inactiveCount,
-		enrolled2SVCount:   enrolled2SVCount,
-		enforced2SVCount:   enforced2SVCount,
-		active7dCount:      active7dCount,
-		active30dCount:     active30dCount,
-		inventory:          inventory,
-		inventoryTruncated: inventoryTruncated,
-		inventoryDropped:   inventoryDropped,
-		adminRows:          adminRows,
-		adminIDs:           adminIDs,
-		usersByOU:          usersByOU,
+		superAdmins:           superAdmins,
+		delegatedAdmins:       delegatedAdmins,
+		privilegedTotal:       privilegedTotal,
+		privileged2SVEnrolled: privileged2SVEnrolled,
+		privileged2SVEnforced: privileged2SVEnforced,
+		activeCount:           activeCount,
+		inactiveCount:         inactiveCount,
+		enrolled2SVCount:      enrolled2SVCount,
+		enforced2SVCount:      enforced2SVCount,
+		active7dCount:         active7dCount,
+		active30dCount:        active30dCount,
+		inventory:             inventory,
+		inventoryTruncated:    inventoryTruncated,
+		inventoryDropped:      inventoryDropped,
+		adminRows:             adminRows,
+		adminIDs:              adminIDs,
+		usersByOU:             usersByOU,
 	}, nil
 }
 
@@ -458,15 +478,67 @@ func lessUserRow(a, b User) bool {
 	return a.PrimaryEmail < b.PrimaryEmail
 }
 
-// enrichAdminInventory attaches per-admin role names (and, at internal, the
-// org-unit-scoped flag) to the admin rows collected during scanUsers, and
-// returns the custom-role inventory. It degrades gracefully: if the role-
-// management scope is missing or the impersonation user lacks the role, the
-// per-admin role list is omitted with a diagnostic and the admin emails / 2SV
-// flags still ship.
-func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, scan userScanResult) ([]Admin, []CustomRole) {
-	rows := scan.adminRows
+// applyUserScan fills in the values the live Directory user scan gives, and
+// warns where the lagged usage report disagrees. When the scan failed they are
+// left out.
+func (c *Collector) applyUserScan(posture *OrgPosture, report googleworkspace.CustomerUsageReport, reportErr error, scan userScanResult, scanErr error, level componentsdk.Level) {
+	audit := level.AtLeast(componentsdk.LevelAudit)
+	if audit {
+		posture.Activity = &ActivityMetrics{}
+	}
+	if scanErr != nil {
+		pointers := []string{
+			"/users/active", "/users/inactive_pct",
+			"/authentication/2sv_enrolled_pct", "/authentication/2sv_enforced_pct",
+			"/admins/privileged_users_count", "/admins/super_admin_count", "/admins/delegated_admin_count",
+			"/admins/privileged_users_2sv_enrolled_pct", "/admins/privileged_users_2sv_enforced_pct",
+		}
+		if audit {
+			pointers = append(pointers, "/activity/active_7d_pct", "/activity/active_30d_pct", "/users/inventory", "/admins/inventory")
+		}
+		c.gaps.leaveOut(failed(scanErr), pointers...)
+		return
+	}
 
+	posture.Users.Active = intPtr(scan.activeCount)
+	posture.Users.InactivePct = percentFloat(scan.inactiveCount, scan.activeCount)
+	posture.Users.Inventory = scan.inventory
+	posture.Users.TruncatedInventory = scan.inventoryTruncated
+	posture.Users.TruncatedInventoryDropped = scan.inventoryDropped
+
+	posture.Admins.PrivilegedUsersCount = intPtr(scan.privilegedTotal)
+	posture.Admins.SuperAdminCount = intPtr(scan.superAdmins)
+	posture.Admins.DelegatedAdminCount = intPtr(scan.delegatedAdmins)
+	posture.Admins.PrivilegedUsers2SVEnrolledPct = percentFloat(scan.privileged2SVEnrolled, scan.privilegedTotal)
+	posture.Admins.PrivilegedUsers2SVEnforcedPct = percentFloat(scan.privileged2SVEnforced, scan.privilegedTotal)
+	if audit {
+		posture.Admins.Inventory = scan.adminRows
+	}
+	posture.counts.inactiveUsers = intPtr(scan.inactiveCount)
+	posture.counts.enrolled2SVUsers = intPtr(scan.enrolled2SVCount)
+	posture.counts.enforced2SVUsers = intPtr(scan.enforced2SVCount)
+	posture.counts.privileged2SVEnrolled = intPtr(scan.privileged2SVEnrolled)
+
+	lagged := func(param string) *float64 {
+		if reportErr != nil {
+			return nil
+		}
+		return reportShare(report, param)
+	}
+	posture.Authentication.TwoSVEnrolledPct = c.reconcileWithLive("2SV enrollment coverage", lagged("accounts:num_users_2sv_enrolled"), scan.enrolled2SVCount, scan.activeCount)
+	posture.Authentication.TwoSVEnforcedPct = c.reconcileWithLive("2SV enforcement coverage", lagged("accounts:num_users_2sv_enforced"), scan.enforced2SVCount, scan.activeCount)
+	if audit {
+		posture.Activity.Active7dPct = c.reconcileWithLive("7-day login activity", lagged("accounts:num_7day_logins"), scan.active7dCount, scan.activeCount)
+		posture.Activity.Active30dPct = c.reconcileWithLive("30-day login activity", lagged("accounts:num_30day_logins"), scan.active30dCount, scan.activeCount)
+	}
+}
+
+// enrichAdminInventory lists the custom-role inventory and attaches per-admin
+// role names (and, at internal, the org-unit-scoped flag) to the admin rows
+// collected during scanUsers. It degrades gracefully: if the role-management
+// scope is missing or the impersonation user lacks the role, the role names
+// are left out with a gap and the admin emails / 2SV flags still ship.
+func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, posture *OrgPosture, scan userScanResult, scanErr error) {
 	roleByID := make(map[string]googleworkspace.Role)
 	var customRoles []CustomRole
 	err := c.client.ListRoles(ctx, scope.customerID, func(roles []googleworkspace.Role) error {
@@ -484,7 +556,16 @@ func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, s
 	})
 	if err != nil {
 		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
-		return rows, nil
+		c.gaps.leaveOut(failed(err), "/admins/custom_roles")
+		c.leaveOutAdminRoles(posture, scope, failed(err))
+		return
+	}
+	slices.SortFunc(customRoles, func(a, b CustomRole) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	posture.Admins.CustomRoles = customRoles
+	if scanErr != nil {
+		return
 	}
 
 	assignmentsByUser := make(map[string][]googleworkspace.RoleAssignment)
@@ -496,9 +577,11 @@ func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, s
 	})
 	if err != nil {
 		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
-		return rows, customRoles
+		c.leaveOutAdminRoles(posture, scope, failed(err))
+		return
 	}
 
+	rows := posture.Admins.Inventory
 	includeInternal := scope.level.AtLeast(componentsdk.LevelInternal)
 	for i := range rows {
 		userID := scan.adminIDs[i]
@@ -516,11 +599,16 @@ func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, s
 		}
 		slices.Sort(rows[i].Roles)
 	}
+}
 
-	slices.SortFunc(customRoles, func(a, b CustomRole) int {
-		return strings.Compare(a.Name, b.Name)
-	})
-	return rows, customRoles
+// leaveOutAdminRoles records why each admin row has no role names.
+func (c *Collector) leaveOutAdminRoles(posture *OrgPosture, scope scanScope, why *missing) {
+	for i := range posture.Admins.Inventory {
+		c.gaps.leaveOut(why, itemPointer("/admins/inventory", i, "roles"))
+		if scope.level.AtLeast(componentsdk.LevelInternal) {
+			c.gaps.leaveOut(why, itemPointer("/admins/inventory", i, "org_unit_scoped"))
+		}
+	}
 }
 
 func (c *Collector) scanDeviceAccess(ctx context.Context, scope scanScope) (DeviceAccessMetrics, error) {
@@ -549,9 +637,11 @@ func (c *Collector) scanDeviceAccess(ctx context.Context, scope scanScope) (Devi
 	}, nil
 }
 
+// scanAccessContextManager summarizes the access levels of the configured
+// policy. It returns nil, with a warning, when the organization has no policy.
 func (c *Collector) scanAccessContextManager(ctx context.Context, scope scanScope) (*AccessContextManagerMetrics, error) {
-	policy, err := c.resolveAccessPolicy(ctx)
-	if err != nil {
+	policy, found, err := c.resolveAccessPolicy(ctx)
+	if err != nil || !found {
 		return nil, err
 	}
 
@@ -621,29 +711,26 @@ func buildAccessLevelSummary(lvl googleworkspace.AccessLevel, includeRuleDetails
 	return row
 }
 
-func (c *Collector) resolveAccessPolicy(ctx context.Context) (googleworkspace.AccessPolicy, error) {
+func (c *Collector) resolveAccessPolicy(ctx context.Context) (googleworkspace.AccessPolicy, bool, error) {
 	if policy := normalizeAccessPolicyName(c.config.AccessPolicy); policy != "" {
 		return googleworkspace.AccessPolicy{
 			Name:   policy,
 			Parent: normalizeOrganizationParent(c.config.OrganizationID),
-		}, nil
+		}, true, nil
 	}
 
 	parent := normalizeOrganizationParent(c.config.OrganizationID)
-	if parent == "" {
-		return googleworkspace.AccessPolicy{}, fmt.Errorf("organization_id or access_policy is required for access context manager enrichment")
-	}
-
 	var policies []googleworkspace.AccessPolicy
 	err := c.client.ListAccessPolicies(ctx, parent, func(batch []googleworkspace.AccessPolicy) error {
 		policies = append(policies, batch...)
 		return nil
 	})
 	if err != nil {
-		return googleworkspace.AccessPolicy{}, err
+		return googleworkspace.AccessPolicy{}, false, err
 	}
 	if len(policies) == 0 {
-		return googleworkspace.AccessPolicy{}, fmt.Errorf("no access context manager policy found for %s", parent)
+		c.warn("no access context manager policy found for %s; config enrichment omitted", parent)
+		return googleworkspace.AccessPolicy{}, false, nil
 	}
 
 	slices.SortFunc(policies, func(a, b googleworkspace.AccessPolicy) int {
@@ -653,7 +740,7 @@ func (c *Collector) resolveAccessPolicy(ctx context.Context) (googleworkspace.Ac
 		c.warn("multiple access context manager policies found for %s; using %s", parent, policies[0].Name)
 	}
 
-	return policies[0], nil
+	return policies[0], true, nil
 }
 
 func normalizeOrganizationParent(raw string) string {
@@ -708,9 +795,9 @@ const maxReportRetries = 10
 //
 // The Reports API can signal "no data" in two ways:
 //   - HTTP 400 with "not yet available" (caught as an error)
-//   - HTTP 200 with a warnings[] entry like "Data is not available"
+//   - HTTP 200 with a "data is not available" warning
 //
-// Both are treated as retryable. A "Partial data is available" warning is
+// Both are treated as retryable. A "partial data is available" warning is
 // surfaced as a diagnostic but the report is still used.
 func (c *Collector) fetchUsageReport(ctx context.Context, customerID string, collectedAt time.Time) (googleworkspace.CustomerUsageReport, string, error) {
 	for i := range maxReportRetries {
@@ -732,7 +819,7 @@ func (c *Collector) fetchUsageReport(ctx context.Context, customerID string, col
 			continue
 		}
 		for _, w := range report.Warnings {
-			if strings.Contains(w.Message, "Partial data") {
+			if isPartialDataWarning(w) {
 				c.warn("usage report for %s returned a partial-data warning: %s", date, w.Message)
 			}
 		}
@@ -743,7 +830,7 @@ func (c *Collector) fetchUsageReport(ctx context.Context, customerID string, col
 		return report, date, nil
 	}
 
-	return googleworkspace.CustomerUsageReport{}, "", fmt.Errorf("no usage report available for the last %d days", maxReportRetries)
+	return googleworkspace.CustomerUsageReport{}, "", componentsdk.CodeError(componentsdk.CodeVendorError, fmt.Errorf("no usage report available for the last %d days", maxReportRetries))
 }
 
 // isDataNotYetAvailable checks whether a Google API error indicates the
@@ -757,19 +844,37 @@ func isDataNotYetAvailable(err error) bool {
 }
 
 // hasDataNotAvailableWarning checks whether a 200 response carries a warning
-// indicating the report data is not available for the requested date.
+// that the report has no data for the requested date.
+//
+// The Reports API reference gives two messages, for the no-data warning and
+// then the partial-data warning.
+//   - Sorry, data for date yyyy-mm-dd for application "name" is not available.
+//   - Data for date yyyy-mm-dd for application "name" is not available right
+//     now, please try again after a few hours.
+//
+// Messages that start with the warnings' names, "Data is not available" and
+// "Partial data", are matched too.
 func hasDataNotAvailableWarning(warnings []googleworkspace.ReportWarning) bool {
 	for _, w := range warnings {
-		if strings.Contains(w.Message, "Data is not available") {
+		if isPartialDataWarning(w) {
+			continue
+		}
+		if strings.Contains(w.Message, "Sorry, data for date") || strings.Contains(w.Message, "Data is not available") {
 			return true
 		}
 	}
 	return false
 }
 
+// isPartialDataWarning checks whether a warning says the report's data for
+// the date is partial. hasDataNotAvailableWarning lists the messages.
+func isPartialDataWarning(w googleworkspace.ReportWarning) bool {
+	return strings.Contains(w.Message, "not available right now") || strings.Contains(w.Message, "Partial data")
+}
+
 // pacificLocation is the timezone Google uses for usage report day boundaries.
-// The main binary imports time/tzdata to guarantee this succeeds in minimal
-// container environments without system tzdata.
+// This package imports time/tzdata so the load succeeds in minimal container
+// environments without system tzdata.
 var pacificLocation = func() *time.Location {
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
@@ -787,58 +892,123 @@ func reportDateFor(now time.Time, daysBack int) string {
 	return now.In(pacificLocation).AddDate(0, 0, -daysBack).Format("2006-01-02")
 }
 
-// applyUsageReport maps the customer usage report into the posture metric
-// blocks. Activity (7/30-day login percentages) is audit+ only; Apps
-// (authorized app count) is internal only. The per-user inactivity percentage,
-// the activity percentages, and the live 2SV enrollment and enforcement
-// percentages are overwritten later from the Directory user scan.
-func applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageReport, level componentsdk.Level) {
-	posture.Users = UserMetrics{
-		Total:        int(report.NumUsers),
-		Suspended:    int(report.NumSuspendedUsers),
-		Archived:     int(report.NumArchivedUsers),
-		LockedPct:    percentFloat(int(report.NumLockedUsers), int(report.NumUsers)),
-		InactiveDays: DefaultInactiveDays,
-	}
-	if level.AtLeast(componentsdk.LevelAudit) {
-		posture.Activity = &ActivityMetrics{
-			Active7dPct:  percentFloat(int(report.Num7DayLogins), int(report.NumUsers)),
-			Active30dPct: percentFloat(int(report.Num30DayLogins), int(report.NumUsers)),
-		}
-	}
-	posture.Authentication = AuthMetrics{
-		TwoSVEnrolledPct:  percentFloat(int(report.NumUsers2SVEnrolled), int(report.NumUsers)),
-		TwoSVEnforcedPct:  percentFloat(int(report.NumUsers2SVEnforced), int(report.NumUsers)),
-		TwoSVProtectedPct: percentFloat(int(report.NumUsers2SVProtected), int(report.NumUsers)),
-		PasskeyUsersPct:   percentFloat(int(report.NumUsersWithPasskeysEnrolled), int(report.NumUsers)),
-		SecurityKeysTotal: int(report.NumSecurityKeys),
-	}
-	posture.Passwords = PasswordMetrics{
-		WeakPasswordPct:               percentFloat(int(report.NumUsersPasswordStrengthWeak), int(report.NumUsers)),
-		PasswordLengthNonCompliantPct: percentFloat(int(report.NumUsersPasswordLengthNonCompliant), int(report.NumUsers)),
+// reportPointers lists the values the usage report gives at level.
+func reportPointers(level componentsdk.Level) []string {
+	pointers := []string{
+		"/usage_report_date",
+		"/users/total", "/users/suspended", "/users/archived", "/users/locked_pct",
+		"/authentication/2sv_protected_pct", "/authentication/passkey_users_pct", "/authentication/security_keys_total",
+		"/passwords/weak_password_pct", "/passwords/password_length_non_compliant_pct",
 	}
 	if level.AtLeast(componentsdk.LevelInternal) {
-		posture.Apps = &AppMetrics{
-			AuthorizedAppsCount: int(report.NumAuthorizedApps),
+		pointers = append(pointers, "/apps/authorized_apps_count")
+	}
+	return pointers
+}
+
+// applyUsageReport maps the customer usage report into the posture metric
+// blocks. Apps (authorized app count) is internal only. The report lags the
+// live Directory by days, so the user scan, not the report, gives the 2SV
+// enrollment and enforcement, activity, and inactivity percentages. A value
+// the report could not give is left out.
+func (c *Collector) applyUsageReport(posture *OrgPosture, report googleworkspace.CustomerUsageReport, date string, reportErr error, level componentsdk.Level) {
+	if level.AtLeast(componentsdk.LevelInternal) {
+		posture.Apps = &AppMetrics{}
+	}
+	if reportErr != nil {
+		c.gaps.leaveOut(failed(reportErr), reportPointers(level)...)
+		return
+	}
+	posture.UsageReportDate = &date
+
+	value := func(pointer, param string, v int64) *int {
+		if slices.Contains(report.Missing, param) {
+			c.gaps.leaveOut(failed(invalidResponse("the usage report for %s has no %s", date, param)), pointer)
+			return nil
 		}
+		return intPtr(int(v))
+	}
+	share := func(pointer, param string) *float64 {
+		for _, p := range []string{param, "accounts:num_users"} {
+			if slices.Contains(report.Missing, p) {
+				c.gaps.leaveOut(failed(invalidResponse("the usage report for %s has no %s", date, p)), pointer)
+				return nil
+			}
+		}
+		return reportShare(report, param)
+	}
+
+	posture.Users.Total = value("/users/total", "accounts:num_users", report.NumUsers)
+	posture.Users.Suspended = value("/users/suspended", "accounts:num_suspended_users", report.NumSuspendedUsers)
+	posture.Users.Archived = value("/users/archived", "accounts:num_archived_users", report.NumArchivedUsers)
+	posture.Users.LockedPct = share("/users/locked_pct", "accounts:num_locked_users")
+	posture.Authentication.TwoSVProtectedPct = share("/authentication/2sv_protected_pct", "accounts:num_users_2sv_protected")
+	posture.Authentication.PasskeyUsersPct = share("/authentication/passkey_users_pct", "accounts:num_users_with_passkeys_enrolled")
+	posture.Authentication.SecurityKeysTotal = value("/authentication/security_keys_total", "accounts:num_security_keys", report.NumSecurityKeys)
+	posture.Passwords.WeakPasswordPct = share("/passwords/weak_password_pct", "accounts:num_users_password_strength_weak")
+	posture.Passwords.PasswordLengthNonCompliantPct = share("/passwords/password_length_non_compliant_pct", "accounts:num_users_password_length_non_compliant")
+	if posture.Apps != nil {
+		posture.Apps.AuthorizedAppsCount = value("/apps/authorized_apps_count", "accounts:num_authorized_apps", report.NumAuthorizedApps)
+	}
+
+	// count is the report's count of users with param, under the same
+	// conditions share gives their percentage.
+	count := func(param string, v int64) *int {
+		if slices.Contains(report.Missing, param) || slices.Contains(report.Missing, "accounts:num_users") {
+			return nil
+		}
+		return intPtr(int(v))
+	}
+	posture.counts.passkeyUsers = count("accounts:num_users_with_passkeys_enrolled", report.NumUsersWithPasskeysEnrolled)
+	posture.counts.lockedUsers = count("accounts:num_locked_users", report.NumLockedUsers)
+	posture.counts.weakPasswordUsers = count("accounts:num_users_password_strength_weak", report.NumUsersPasswordStrengthWeak)
+	posture.counts.shortPasswordUsers = count("accounts:num_users_password_length_non_compliant", report.NumUsersPasswordLengthNonCompliant)
+
+	if posture.Users.Total != nil && *posture.Users.Total == 0 {
+		c.warn("usage report for %s returned no user data; tenant may be too new for report generation", date)
 	}
 }
 
-// reconcileWithLive replaces a usage-report percentage with the one computed
-// from the live Directory scan, warning when the two diverge by a percentage
-// point or more.
-func (c *Collector) reconcileWithLive(metric string, reportPct float64, liveCount, liveTotal int) float64 {
+// reportShare is the report's percentage of users with param, or nil when the
+// report left it out or counts no users.
+func reportShare(report googleworkspace.CustomerUsageReport, param string) *float64 {
+	if slices.Contains(report.Missing, param) || slices.Contains(report.Missing, "accounts:num_users") {
+		return nil
+	}
+	counts := map[string]int64{
+		"accounts:num_locked_users":                        report.NumLockedUsers,
+		"accounts:num_7day_logins":                         report.Num7DayLogins,
+		"accounts:num_30day_logins":                        report.Num30DayLogins,
+		"accounts:num_users_2sv_enrolled":                  report.NumUsers2SVEnrolled,
+		"accounts:num_users_2sv_enforced":                  report.NumUsers2SVEnforced,
+		"accounts:num_users_2sv_protected":                 report.NumUsers2SVProtected,
+		"accounts:num_users_with_passkeys_enrolled":        report.NumUsersWithPasskeysEnrolled,
+		"accounts:num_users_password_strength_weak":        report.NumUsersPasswordStrengthWeak,
+		"accounts:num_users_password_length_non_compliant": report.NumUsersPasswordLengthNonCompliant,
+	}
+	return percentFloat(int(counts[param]), int(report.NumUsers))
+}
+
+// reconcileWithLive returns the percentage computed from the live Directory
+// scan, warning when the lagged usage report's differs by a percentage point
+// or more.
+func (c *Collector) reconcileWithLive(metric string, reportPct *float64, liveCount, liveTotal int) *float64 {
 	livePct := percentFloat(liveCount, liveTotal)
-	if math.Abs(reportPct-livePct) >= 1 {
-		c.warn("%s differs between the lagged usage report (%.2f%%) and live Directory data (%.2f%%); using the live Directory value", metric, reportPct, livePct)
+	if reportPct != nil && livePct != nil && math.Abs(*reportPct-*livePct) >= 1 {
+		c.warn("%s differs between the lagged usage report (%.2f%%) and live Directory data (%.2f%%); using the live Directory value", metric, *reportPct, *livePct)
 	}
 	return livePct
 }
 
-func percentFloat(part, total int) float64 {
+// percentFloat is part of total as a percentage rounded to two places, or
+// nil over no population.
+func percentFloat(part, total int) *float64 {
 	if total == 0 {
-		return 0
+		return nil
 	}
 	pct := float64(part) / float64(total) * 100
-	return math.Round(pct*100) / 100
+	rounded := math.Round(pct*100) / 100
+	return &rounded
 }
+
+func intPtr(v int) *int { return &v }

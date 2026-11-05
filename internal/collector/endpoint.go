@@ -12,7 +12,8 @@ import (
 // Chrome OS devices. Audit emits device counts by OS, the not-synced-30d count,
 // and per-OS compliant / non-compliant breakdowns; internal adds per-device rows
 // (capped, sorted by last sync descending). Device serials / IMEIs are never
-// collected. Returns nil at trust or if both device lists fail.
+// collected. Returns nil at trust or when either device list fails: counts
+// over one platform would read as the whole fleet.
 func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint {
 	if !scope.level.AtLeast(componentsdk.LevelAudit) {
 		return nil
@@ -32,7 +33,12 @@ func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint
 	if chromeErr != nil {
 		c.warnSurfaceScan("endpoint:chromeos", "admin.directory.device.chromeos.readonly", "Services Admin (or Super Admin)", chromeErr)
 	}
-	if mobileErr != nil && chromeErr != nil {
+	if mobileErr != nil || chromeErr != nil {
+		err := mobileErr
+		if err == nil {
+			err = chromeErr
+		}
+		c.gaps.leaveOut(failed(err), "/endpoint")
 		return nil
 	}
 
@@ -78,7 +84,7 @@ func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint
 	}
 
 	if includeRows {
-		result.Inventory, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, inventory, EndpointDevicesCap, "endpoint device inventory", func(a, b EndpointDevice) bool {
+		result.Inventory, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, inventory, EndpointDevicesCap, "endpoint device inventory", "/endpoint/inventory", func(a, b EndpointDevice) bool {
 			return a.LastSync > b.LastSync
 		})
 	}

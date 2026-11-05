@@ -2,6 +2,7 @@ package googleworkspace
 
 import (
 	"context"
+	"fmt"
 
 	"google.golang.org/api/googleapi"
 )
@@ -11,11 +12,14 @@ import (
 func (c *APIClient) ListOrgUnits(ctx context.Context, customerID string) ([]OrgUnit, error) {
 	resp, err := c.dirOrgUnits.Orgunits.List(customerID).
 		Type("all").
-		Fields(googleapi.Field("organizationUnits(orgUnitPath,parentOrgUnitPath,name,description,blockInheritance)")).
-		Context(ctx).
+		Fields(googleapi.Field("kind,organizationUnits(orgUnitPath,parentOrgUnitPath,name,description,blockInheritance)")).
+		Context(named(ctx, OpOrgUnitsList)).
 		Do()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing org units: %w", apiError(OpOrgUnitsList, err))
+	}
+	if resp.Kind == "" {
+		return nil, invalidResponse("org units response has no kind")
 	}
 
 	out := make([]OrgUnit, 0, len(resp.OrganizationUnits))

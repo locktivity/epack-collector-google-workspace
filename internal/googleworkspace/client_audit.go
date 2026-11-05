@@ -15,15 +15,20 @@ import (
 // device-state conditions.
 func (c *APIClient) ListContextAwareAccessEvents(ctx context.Context, customerID string, startTime time.Time, callback func([]ContextAwareAccessEvent) error) error {
 	call := c.auditReports.Activities.List("all", "context_aware_access").
-		CustomerId(customerID).
 		EventName("ACCESS_DENY_EVENT").
 		StartTime(startTime.UTC().Format(time.RFC3339)).
 		MaxResults(maxActivitiesPerPage).
 		Fields(
-			googleapi.Field("nextPageToken,items(actor/email,id/time,events(name,parameters(name,value,multiValue,intValue,boolValue)))"),
+			googleapi.Field("kind,nextPageToken,items(actor/email,id/time,events(name,parameters(name,value,multiValue,intValue,boolValue)))"),
 		)
+	if reportsCustomer(customerID) {
+		call = call.CustomerId(customerID)
+	}
 
-	return call.Pages(ctx, func(resp *reports.Activities) error {
+	err := call.Pages(named(ctx, OpAccessEventsList), func(resp *reports.Activities) error {
+		if resp.Kind == "" {
+			return invalidResponse("context-aware access activities page has no kind")
+		}
 		events := make([]ContextAwareAccessEvent, 0, len(resp.Items))
 		for _, activity := range resp.Items {
 			events = append(events, mapContextAwareAccessEvents(activity)...)
@@ -33,29 +38,41 @@ func (c *APIClient) ListContextAwareAccessEvents(ctx context.Context, customerID
 		}
 		return callback(events)
 	})
+	return listError(OpAccessEventsList, "listing context-aware access events", err)
 }
 
 // ListActivities lists Reports API activity events for an application within a
 // time window. When eventNames is non-empty, one filtered request is made per
 // event name (the security-relevant subsets are small); when empty, all events
 // for the application are returned. Used by the audit-log surfaces.
+//
+// The response to a filtered request has each activity that holds the event,
+// with all of the activity's events. Only the events with the requested name
+// are kept, so an event is listed once even when its activity holds several
+// of the names.
 func (c *APIClient) ListActivities(ctx context.Context, customerID, applicationName string, eventNames []string, startTime time.Time, callback func([]AuditEvent) error) error {
 	do := func(eventName string) error {
 		call := c.auditReports.Activities.List("all", applicationName).
-			CustomerId(customerID).
 			StartTime(startTime.UTC().Format(time.RFC3339)).
 			MaxResults(maxActivitiesPerPage).
-			Fields(googleapi.Field("nextPageToken,items(actor/email,ipAddress,id/time,id/applicationName,events(name,parameters(name,value,multiValue,intValue,boolValue)))"))
+			Fields(googleapi.Field("kind,nextPageToken,items(actor/email,ipAddress,id/time,id/applicationName,events(name,parameters(name,value,multiValue,intValue,boolValue)))"))
+		if reportsCustomer(customerID) {
+			call = call.CustomerId(customerID)
+		}
 		if eventName != "" {
 			call = call.EventName(eventName)
 		}
-		return call.Pages(ctx, func(resp *reports.Activities) error {
-			events := mapAuditEvents(resp.Items)
+		err := call.Pages(named(ctx, OpActivitiesList), func(resp *reports.Activities) error {
+			if resp.Kind == "" {
+				return invalidResponse("%s activities page has no kind", applicationName)
+			}
+			events := mapAuditEvents(resp.Items, eventName)
 			if len(events) == 0 {
 				return nil
 			}
 			return callback(events)
 		})
+		return listError(OpActivitiesList, "listing "+applicationName+" activities", err)
 	}
 
 	if len(eventNames) == 0 {
@@ -69,7 +86,9 @@ func (c *APIClient) ListActivities(ctx context.Context, customerID, applicationN
 	return nil
 }
 
-func mapAuditEvents(activities []*reports.Activity) []AuditEvent {
+// mapAuditEvents maps the events of activities. When eventName is set, it
+// keeps only the events with that name.
+func mapAuditEvents(activities []*reports.Activity, eventName string) []AuditEvent {
 	var out []AuditEvent
 	for _, activity := range activities {
 		if activity == nil {
@@ -87,7 +106,7 @@ func mapAuditEvents(activities []*reports.Activity) []AuditEvent {
 		}
 		ipAddress := activity.IpAddress
 		for _, event := range activity.Events {
-			if event == nil {
+			if event == nil || (eventName != "" && event.Name != eventName) {
 				continue
 			}
 			mapped := AuditEvent{

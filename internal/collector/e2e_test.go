@@ -22,13 +22,12 @@
 //	GOOGLE_WORKSPACE_E2E_ACCESS_POLICY    Access Context Manager policy
 //
 // The collection level only controls how much is gathered; surfaces whose
-// scopes (or Cloud-project APIs) are ungranted degrade with diagnostics rather
+// scopes (or Cloud-project APIs) are ungranted are left out with a gap rather
 // than failing the run, so these tests pass against a tenant with any scope set.
 
 package collector
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -52,7 +51,9 @@ func e2eLevel() componentsdk.Level {
 	}
 }
 
-func getE2EConfig(t *testing.T) Config {
+// collectE2E runs the collector the way a runner does, against the real
+// APIs, and returns the detailed artifact as JSON.
+func collectE2E(t *testing.T, level componentsdk.Level) []byte {
 	t.Helper()
 
 	creds := os.Getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -61,38 +62,49 @@ func getE2EConfig(t *testing.T) Config {
 		t.Skip("Skipping e2e: GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_WORKSPACE_E2E_ADMIN_EMAIL required")
 	}
 
-	return Config{
-		AdminEmail:      adminEmail,
-		CredentialsJSON: creds,
-		Customer:        strings.TrimSpace(os.Getenv("GOOGLE_WORKSPACE_E2E_CUSTOMER")),
-		OrganizationID:  strings.TrimSpace(os.Getenv("GOOGLE_WORKSPACE_E2E_ORGANIZATION_ID")),
-		AccessPolicy:    strings.TrimSpace(os.Getenv("GOOGLE_WORKSPACE_E2E_ACCESS_POLICY")),
-	}
-}
-
-func collectE2E(t *testing.T, level componentsdk.Level) *OrgPosture {
-	t.Helper()
-	config := getE2EConfig(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	c, err := New(ctx, config)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
+	config := map[string]any{"admin_email": adminEmail, "level": string(level)}
+	for key, env := range map[string]string{
+		"customer":        "GOOGLE_WORKSPACE_E2E_CUSTOMER",
+		"organization_id": "GOOGLE_WORKSPACE_E2E_ORGANIZATION_ID",
+		"access_policy":   "GOOGLE_WORKSPACE_E2E_ACCESS_POLICY",
+	} {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			config[key] = v
+		}
 	}
 
-	posture, err := c.Collect(ctx, level)
-	if err != nil {
-		t.Fatalf("Collect(%s) error: %v", level, err)
+	res := componentsdk.RunInProcess(Spec("e2e", "e2e"), Run, componentsdk.InProcessOptions{
+		Config:  config,
+		Secrets: map[string]string{"GOOGLE_SERVICE_ACCOUNT_JSON": creds},
+	})
+	if res.ExitCode != 0 {
+		t.Fatalf("run failed with exit %d: %s", res.ExitCode, res.Stderr)
 	}
-	return posture
+	if res.Result != nil {
+		for _, gap := range res.Result.Gaps {
+			t.Logf("gap: %s %s %s (%s)", gap.Path, gap.Pointer, gap.Code, gap.VendorCode)
+		}
+		for _, check := range res.Result.Checks {
+			t.Errorf("output check %s at %s %s: %s", check.Check, check.Path, check.Pointer, check.Message)
+		}
+	}
+	for _, artifact := range res.Artifacts {
+		if artifact.Path == detailedPath {
+			return artifact.Data
+		}
+	}
+	t.Fatalf("no %s in the output", detailedPath)
+	return nil
 }
 
 func TestE2E_RealGoogleWorkspaceCollection(t *testing.T) {
 	level := e2eLevel()
-	posture := collectE2E(t, level)
+	raw := collectE2E(t, level)
 
+	var posture OrgPosture
+	if err := json.Unmarshal(raw, &posture); err != nil {
+		t.Fatalf("decoding artifact: %v", err)
+	}
 	if posture.SchemaVersion != SchemaVersion {
 		t.Errorf("schema_version = %q, want %q", posture.SchemaVersion, SchemaVersion)
 	}
@@ -105,11 +117,8 @@ func TestE2E_RealGoogleWorkspaceCollection(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, posture.CollectedAt); err != nil {
 		t.Errorf("collected_at %q is not RFC3339: %v", posture.CollectedAt, err)
 	}
-	if posture.OrgDomain == "" {
-		t.Error("org_domain should not be empty")
-	}
-	if posture.CustomerID == "" {
-		t.Error("customer_id should not be empty")
+	if posture.OrgDomain == nil || *posture.OrgDomain == "" {
+		t.Error("org_domain should be read for a Super Admin")
 	}
 
 	assertPercentFloat(t, "users.locked_pct", posture.Users.LockedPct)
@@ -125,26 +134,21 @@ func TestE2E_RealGoogleWorkspaceCollection(t *testing.T) {
 	assertPercentFloat(t, "passwords.weak_password_pct", posture.Passwords.WeakPasswordPct)
 	assertPercentFloat(t, "admins.privileged_users_2sv_enforced_pct", posture.Admins.PrivilegedUsers2SVEnforcedPct)
 
-	data, _ := json.MarshalIndent(posture, "", "  ")
-	t.Logf("collection complete at level=%s org=%s\n%s", level, posture.OrgDomain, string(data))
+	t.Logf("collection complete at level=%s\n%s", level, raw)
 }
 
 func TestE2E_OutputValidJSON(t *testing.T) {
-	posture := collectE2E(t, e2eLevel())
+	raw := collectE2E(t, e2eLevel())
 
-	data, err := json.Marshal(posture)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
 	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
 
 	for _, field := range []string{
-		"schema_version", "collected_at", "collected_at_level", "provider",
-		"org_domain", "customer_id", "users", "activity", "authentication",
-		"admins", "passwords", "apps",
+		"schema_version", "collected_at", "collected_at_level", "usage_report_date",
+		"provider", "org_domain", "customer_id", "users", "authentication",
+		"admins", "passwords",
 	} {
 		if _, ok := decoded[field]; !ok {
 			t.Errorf("missing required top-level field: %s", field)
@@ -157,8 +161,12 @@ func TestE2E_OutputValidJSON(t *testing.T) {
 // recipients appear as a domain only, and no device serial / IMEI, Vault search
 // query, or full SSO URL ever lands in the artifact.
 func TestE2E_NeverEmitsForbiddenData(t *testing.T) {
-	posture := collectE2E(t, componentsdk.LevelInternal)
+	raw := collectE2E(t, componentsdk.LevelInternal)
 
+	var posture OrgPosture
+	if err := json.Unmarshal(raw, &posture); err != nil {
+		t.Fatalf("decoding artifact: %v", err)
+	}
 	if posture.DriveExternalSharing != nil {
 		for _, ev := range posture.DriveExternalSharing.Events {
 			if strings.Contains(ev.RecipientDomain, "@") {
@@ -174,18 +182,17 @@ func TestE2E_NeverEmitsForbiddenData(t *testing.T) {
 		}
 	}
 
-	data, _ := json.Marshal(posture)
-	raw := strings.ToLower(string(data))
+	lower := strings.ToLower(string(raw))
 	for _, forbidden := range []string{`"serial"`, `"imei"`, `"meid"`, `"query"`, `"search_query"`, `"hold_content"`} {
-		if strings.Contains(raw, forbidden) {
+		if strings.Contains(lower, forbidden) {
 			t.Errorf("artifact contains forbidden key %s", forbidden)
 		}
 	}
 }
 
-func assertPercentFloat(t *testing.T, name string, v float64) {
+func assertPercentFloat(t *testing.T, name string, v *float64) {
 	t.Helper()
-	if v < 0 || v > 100 {
-		t.Errorf("%s should be in [0,100], got %v", name, v)
+	if v != nil && (*v < 0 || *v > 100) {
+		t.Errorf("%s should be in [0,100], got %v", name, *v)
 	}
 }

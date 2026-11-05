@@ -16,7 +16,9 @@ var errMembershipCapReached = errors.New("group membership cap reached")
 // (total, admin- vs user-created), the count of groups allowing external
 // members, and the per-group inventory with settings (external-members flag,
 // who-can-join/post). Internal adds each group's member list, bounded by the
-// global membership cap. Returns nil at trust or on scope / role denial.
+// global membership cap. Returns nil at trust or when the group list cannot be
+// read. A group whose settings or members cannot be read keeps its row with
+// those values left out.
 func (c *Collector) scanGroups(ctx context.Context, scope scanScope) *Groups {
 	if !scope.level.AtLeast(componentsdk.LevelAudit) {
 		return nil
@@ -28,6 +30,9 @@ func (c *Collector) scanGroups(ctx context.Context, scope scanScope) *Groups {
 
 	var inventory []Group
 	settingsWarned := false
+	externalAllowed := 0
+	settingsFailed := 0
+	var settingsErr error
 
 	err := c.client.ListGroups(ctx, scope.customerID, func(groups []googleworkspace.Group) error {
 		for _, g := range groups {
@@ -58,12 +63,18 @@ func (c *Collector) scanGroups(ctx context.Context, scope scanScope) *Groups {
 					}
 					settingsWarned = true
 				}
+				row.settingsErr = serr
+				settingsFailed++
+				if settingsErr == nil {
+					settingsErr = serr
+				}
 			} else {
-				row.AllowExternalMembers = settings.AllowExternalMembers
+				allow := settings.AllowExternalMembers
+				row.AllowExternalMembers = &allow
 				row.WhoCanJoin = settings.WhoCanJoin
 				row.WhoCanPostMessage = settings.WhoCanPostMessage
-				if settings.AllowExternalMembers {
-					result.ExternalMembersAllowed++
+				if allow {
+					externalAllowed++
 				}
 			}
 			inventory = append(inventory, row)
@@ -72,14 +83,20 @@ func (c *Collector) scanGroups(ctx context.Context, scope scanScope) *Groups {
 	})
 	if err != nil {
 		c.warnSurfaceScan("groups", "admin.directory.group.readonly", "Groups Admin (or Super Admin)", err)
+		c.gaps.leaveOut(failed(err), "/groups")
 		return nil
+	}
+	if settingsFailed > 0 {
+		c.gaps.partial(settingsFailed, failed(settingsErr), "/groups/external_members_allowed")
+	} else {
+		result.ExternalMembersAllowed = &externalAllowed
 	}
 
 	if !collectInventory {
 		return result
 	}
 
-	inventory, result.TruncatedInventoryDropped, result.TruncatedInventory = truncateAndWarn(c, inventory, GroupsCap, "group inventory", func(a, b Group) bool {
+	inventory, result.TruncatedInventoryDropped, result.TruncatedInventory = truncateAndWarn(c, inventory, GroupsCap, "group inventory", "/groups/inventory", func(a, b Group) bool {
 		return a.MemberCount > b.MemberCount
 	})
 
@@ -87,17 +104,34 @@ func (c *Collector) scanGroups(ctx context.Context, scope scanScope) *Groups {
 		c.collectGroupMembers(ctx, result, inventory)
 	}
 
+	for i, row := range inventory {
+		if row.settingsErr != nil {
+			c.gaps.leaveOut(failed(row.settingsErr),
+				itemPointer("/groups/inventory", i, "allow_external_members"),
+				itemPointer("/groups/inventory", i, "who_can_join"),
+				itemPointer("/groups/inventory", i, "who_can_post_message"))
+		}
+		if row.membersErr != nil {
+			c.gaps.leaveOut(failed(row.membersErr), itemPointer("/groups/inventory", i, "members"))
+		}
+	}
 	result.Inventory = inventory
 	return result
 }
 
 // collectGroupMembers fetches each group's members, bounded by the global
-// membership cap (counted across all groups, not per group).
+// membership cap (counted across all groups, not per group). A member list
+// cut short at the cap gets a too_large partial gap. A list not read because
+// of the cap gets a too_large gap.
 func (c *Collector) collectGroupMembers(ctx context.Context, result *Groups, inventory []Group) {
 	total := 0
+	capped := failed(tooLarge("group membership inventory", GroupMembershipsCap))
 	for i := range inventory {
 		if total >= GroupMembershipsCap {
 			result.TruncatedMemberships = true
+			for j := i; j < len(inventory); j++ {
+				c.gaps.leaveOut(capped, itemPointer("/groups/inventory", j, "members"))
+			}
 			break
 		}
 		var members []GroupMember
@@ -120,7 +154,11 @@ func (c *Collector) collectGroupMembers(ctx context.Context, result *Groups, inv
 		})
 		if err != nil && !errors.Is(err, errMembershipCapReached) {
 			c.warn("groups: member list unavailable for %s: %v", inventory[i].Email, err)
+			inventory[i].membersErr = err
 			continue
+		}
+		if errors.Is(err, errMembershipCapReached) {
+			c.gaps.partial(max(1, inventory[i].MemberCount-len(members)), capped, itemPointer("/groups/inventory", i, "members"))
 		}
 		inventory[i].Members = members
 	}

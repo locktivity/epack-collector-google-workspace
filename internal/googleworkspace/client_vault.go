@@ -16,7 +16,7 @@ func (c *APIClient) ListVaultMatters(ctx context.Context, callback func([]VaultM
 		View("BASIC").
 		Fields(googleapi.Field("nextPageToken,matters(matterId,name,state)"))
 
-	return call.Pages(ctx, func(resp *vault.ListMattersResponse) error {
+	err := call.Pages(named(ctx, OpVaultMattersList), func(resp *vault.ListMattersResponse) error {
 		matters := make([]VaultMatter, 0, len(resp.Matters))
 		for _, m := range resp.Matters {
 			if m == nil {
@@ -29,6 +29,7 @@ func (c *APIClient) ListVaultMatters(ctx context.Context, callback func([]VaultM
 		}
 		return callback(matters)
 	})
+	return listError(OpVaultMattersList, "listing Vault matters", err)
 }
 
 // ListVaultHolds lists the holds for a matter. The hold's search query is never
@@ -38,7 +39,7 @@ func (c *APIClient) ListVaultHolds(ctx context.Context, matterID string, callbac
 		PageSize(maxVaultHoldsPerPage).
 		Fields(googleapi.Field("nextPageToken,holds(holdId,name,corpus,updateTime,accounts(accountId),orgUnit(orgUnitId))"))
 
-	return call.Pages(ctx, func(resp *vault.ListHoldsResponse) error {
+	err := call.Pages(named(ctx, OpVaultHoldsList), func(resp *vault.ListHoldsResponse) error {
 		holds := make([]VaultHold, 0, len(resp.Holds))
 		for _, h := range resp.Holds {
 			if h == nil {
@@ -62,4 +63,5 @@ func (c *APIClient) ListVaultHolds(ctx context.Context, matterID string, callbac
 		}
 		return callback(holds)
 	})
+	return listError(OpVaultHoldsList, "listing Vault holds", err)
 }

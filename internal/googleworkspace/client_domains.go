@@ -2,6 +2,7 @@ package googleworkspace
 
 import (
 	"context"
+	"fmt"
 
 	cloudidentity "google.golang.org/api/cloudidentity/v1"
 	"google.golang.org/api/googleapi"
@@ -14,7 +15,9 @@ func (c *APIClient) ListSAMLProfiles(ctx context.Context, callback func([]SAMLPr
 		PageSize(maxSAMLProfilesPerPage).
 		Fields(googleapi.Field("nextPageToken,inboundSamlSsoProfiles(name,displayName,idpConfig(entityId,singleSignOnServiceUri))"))
 
-	return call.Pages(ctx, func(resp *cloudidentity.ListInboundSamlSsoProfilesResponse) error {
+	// Cloud Identity leaves an empty list out of its answer, so {} means no
+	// profiles.
+	err := call.Pages(named(ctx, OpSAMLProfilesList), func(resp *cloudidentity.ListInboundSamlSsoProfilesResponse) error {
 		profiles := make([]SAMLProfile, 0, len(resp.InboundSamlSsoProfiles))
 		for _, p := range resp.InboundSamlSsoProfiles {
 			if p == nil {
@@ -32,16 +35,20 @@ func (c *APIClient) ListSAMLProfiles(ctx context.Context, callback func([]SAMLPr
 		}
 		return callback(profiles)
 	})
+	return listError(OpSAMLProfilesList, "listing SAML SSO profiles", err)
 }
 
 // ListDomains lists the customer's domains. The list endpoint is not paginated.
 func (c *APIClient) ListDomains(ctx context.Context, customerID string) ([]Domain, error) {
 	resp, err := c.dirDomains.Domains.List(customerID).
-		Fields(googleapi.Field("domains(domainName,verified,isPrimary)")).
-		Context(ctx).
+		Fields(googleapi.Field("kind,domains(domainName,verified,isPrimary)")).
+		Context(named(ctx, OpDomainsList)).
 		Do()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing domains: %w", apiError(OpDomainsList, err))
+	}
+	if resp.Kind == "" {
+		return nil, invalidResponse("domains response has no kind")
 	}
 
 	out := make([]Domain, 0, len(resp.Domains))

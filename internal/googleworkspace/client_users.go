@@ -7,11 +7,12 @@ import (
 	"time"
 
 	admin "google.golang.org/api/admin/directory/v1"
+	reports "google.golang.org/api/admin/reports/v1"
 	"google.golang.org/api/googleapi"
 )
 
-// reportParameters is the comma-separated list of accounts parameters to request.
-var reportParameters = strings.Join([]string{
+// reportParameterNames lists the accounts parameters requested.
+var reportParameterNames = []string{
 	"accounts:num_users",
 	"accounts:num_suspended_users",
 	"accounts:num_archived_users",
@@ -26,7 +27,10 @@ var reportParameters = strings.Join([]string{
 	"accounts:num_users_password_length_non_compliant",
 	"accounts:num_authorized_apps",
 	"accounts:num_locked_users",
-}, ",")
+}
+
+// reportParameters is the comma-separated list of accounts parameters to request.
+var reportParameters = strings.Join(reportParameterNames, ",")
 
 // GetCustomer fetches tenant metadata for the configured customer.
 func (c *APIClient) GetCustomer(ctx context.Context, customerKey string) (Customer, error) {
@@ -34,9 +38,12 @@ func (c *APIClient) GetCustomer(ctx context.Context, customerKey string) (Custom
 		customerKey = DefaultCustomerKey
 	}
 
-	resp, err := c.dirCustomer.Customers.Get(customerKey).Context(ctx).Do()
+	resp, err := c.dirCustomer.Customers.Get(customerKey).Context(named(ctx, OpCustomersGet)).Do()
 	if err != nil {
-		return Customer{}, fmt.Errorf("getting customer %s: %w", customerKey, err)
+		return Customer{}, fmt.Errorf("getting customer %s: %w", customerKey, apiError(OpCustomersGet, err))
+	}
+	if resp.Kind == "" {
+		return Customer{}, invalidResponse("customer %s response has no kind", customerKey)
 	}
 
 	return Customer{
@@ -46,14 +53,18 @@ func (c *APIClient) GetCustomer(ctx context.Context, customerKey string) (Custom
 }
 
 // GetCustomerUsageReport fetches the accounts usage report for the given date.
+// A parameter the report leaves out is listed in Missing rather than read as 0.
 func (c *APIClient) GetCustomerUsageReport(ctx context.Context, customerID, date string) (CustomerUsageReport, error) {
-	resp, err := c.reports.CustomerUsageReports.Get(date).
-		CustomerId(customerID).
-		Parameters(reportParameters).
-		Context(ctx).
-		Do()
+	call := c.reports.CustomerUsageReports.Get(date).Parameters(reportParameters)
+	if reportsCustomer(customerID) {
+		call = call.CustomerId(customerID)
+	}
+	resp, err := call.Context(named(ctx, OpUsageReportGet)).Do()
 	if err != nil {
-		return CustomerUsageReport{}, fmt.Errorf("getting customer usage report for %s: %w", date, err)
+		return CustomerUsageReport{}, fmt.Errorf("getting customer usage report for %s: %w", date, apiError(OpUsageReportGet, err))
+	}
+	if resp.Kind == "" {
+		return CustomerUsageReport{}, invalidResponse("customer usage report for %s has no kind", date)
 	}
 
 	report := CustomerUsageReport{Date: date}
@@ -65,11 +76,16 @@ func (c *APIClient) GetCustomerUsageReport(ctx context.Context, customerID, date
 		})
 	}
 
-	if len(resp.UsageReports) == 0 {
-		return report, nil
+	var parameters []*reports.UsageReportParameters
+	if len(resp.UsageReports) > 0 && resp.UsageReports[0] != nil {
+		parameters = resp.UsageReports[0].Parameters
 	}
-
-	for _, p := range resp.UsageReports[0].Parameters {
+	seen := map[string]bool{}
+	for _, p := range parameters {
+		if p == nil {
+			continue
+		}
+		seen[p.Name] = true
 		switch p.Name {
 		case "accounts:num_users":
 			report.NumUsers = p.IntValue
@@ -101,8 +117,20 @@ func (c *APIClient) GetCustomerUsageReport(ctx context.Context, customerID, date
 			report.NumLockedUsers = p.IntValue
 		}
 	}
+	for _, name := range reportParameterNames {
+		if !seen[name] {
+			report.Missing = append(report.Missing, name)
+		}
+	}
 
 	return report, nil
+}
+
+// reportsCustomer reports whether a customer ID goes in a Reports API request.
+// The Reports API takes no my_customer alias, and leaving customerId out
+// means the caller's own customer, which is what the alias means.
+func reportsCustomer(customerID string) bool {
+	return customerID != "" && customerID != DefaultCustomerKey
 }
 
 // ListUsers lists all users for the customer and maps them to the local user type.
@@ -116,15 +144,19 @@ func (c *APIClient) ListUsers(ctx context.Context, customerKey string, callback 
 		MaxResults(maxUsersPerPage).
 		Projection("full").
 		ViewType("admin_view").
-		Fields(googleapi.Field("nextPageToken,users(id,primaryEmail,suspended,archived,isAdmin,isDelegatedAdmin,isEnrolledIn2Sv,isEnforcedIn2Sv,lastLoginTime,orgUnitPath,creationTime,agreedToTerms,ipWhitelisted,changePasswordAtNextLogin)"))
+		Fields(googleapi.Field("kind,nextPageToken,users(id,primaryEmail,suspended,archived,isAdmin,isDelegatedAdmin,isEnrolledIn2Sv,isEnforcedIn2Sv,lastLoginTime,orgUnitPath,creationTime,agreedToTerms,ipWhitelisted,changePasswordAtNextLogin)"))
 
-	return call.Pages(ctx, func(resp *admin.Users) error {
+	err := call.Pages(named(ctx, OpUsersList), func(resp *admin.Users) error {
+		if resp.Kind == "" {
+			return invalidResponse("users page has no kind")
+		}
 		users := make([]User, 0, len(resp.Users))
 		for _, user := range resp.Users {
 			users = append(users, mapUser(user))
 		}
 		return callback(users)
 	})
+	return listError(OpUsersList, "listing users", err)
 }
 
 func mapUser(user *admin.User) User {
