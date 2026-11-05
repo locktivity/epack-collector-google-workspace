@@ -16,7 +16,7 @@ func (c *APIClient) ListAccessPolicies(ctx context.Context, parent string, callb
 		PageSize(maxAccessPoliciesPerPage).
 		Fields(googleapi.Field("nextPageToken,accessPolicies(name,parent,title)"))
 
-	return call.Pages(ctx, func(resp *accesscontextmanager.ListAccessPoliciesResponse) error {
+	err := call.Pages(named(ctx, OpAccessPoliciesList), func(resp *accesscontextmanager.ListAccessPoliciesResponse) error {
 		policies := make([]AccessPolicy, 0, len(resp.AccessPolicies))
 		for _, policy := range resp.AccessPolicies {
 			if policy == nil {
@@ -33,15 +33,16 @@ func (c *APIClient) ListAccessPolicies(ctx context.Context, parent string, callb
 		}
 		return callback(policies)
 	})
+	return listError(OpAccessPoliciesList, "listing access policies", err)
 }
 
 // ListAccessLevels lists Access Context Manager access levels for a policy.
 func (c *APIClient) ListAccessLevels(ctx context.Context, policyName string, callback func([]AccessLevel) error) error {
 	call := c.accessContext.AccessPolicies.AccessLevels.List(policyName).
 		PageSize(maxAccessLevelsPerPage).
-		Fields(googleapi.Field("nextPageToken,accessLevels(name,title,basic(conditions(ipSubnetworks,regions,requiredAccessLevels,devicePolicy(allowedDeviceManagementLevels,allowedEncryptionStatuses,osConstraints,requireAdminApproval,requireCorpOwned,requireScreenlock))),custom)"))
+		Fields(googleapi.Field("nextPageToken,accessLevels(name,title,basic(combiningFunction,conditions(negate,ipSubnetworks,regions,requiredAccessLevels,devicePolicy(allowedDeviceManagementLevels,allowedEncryptionStatuses,osConstraints,requireAdminApproval,requireCorpOwned,requireScreenlock))),custom)"))
 
-	return call.Pages(ctx, func(resp *accesscontextmanager.ListAccessLevelsResponse) error {
+	err := call.Pages(named(ctx, OpAccessLevelsList), func(resp *accesscontextmanager.ListAccessLevelsResponse) error {
 		levels := make([]AccessLevel, 0, len(resp.AccessLevels))
 		for _, level := range resp.AccessLevels {
 			if level == nil {
@@ -54,6 +55,7 @@ func (c *APIClient) ListAccessLevels(ctx context.Context, policyName string, cal
 		}
 		return callback(levels)
 	})
+	return listError(OpAccessLevelsList, "listing access levels", err)
 }
 
 func mapAccessLevel(level *accesscontextmanager.AccessLevel) AccessLevel {
@@ -70,11 +72,18 @@ func mapAccessLevel(level *accesscontextmanager.AccessLevel) AccessLevel {
 	deviceManagementLevels := map[string]struct{}{}
 	encryptionStatuses := map[string]struct{}{}
 
+	var conditions []*accesscontextmanager.Condition
 	for _, condition := range level.Basic.Conditions {
-		if condition == nil {
-			continue
+		if condition != nil {
+			conditions = append(conditions, condition)
 		}
+	}
+	// A request has to meet every condition when the level joins them with
+	// AND, the default, or when there is only one. With OR it has to meet
+	// just one of them.
+	everyConditionApplies := level.Basic.CombiningFunction != "OR" || len(conditions) == 1
 
+	for _, condition := range conditions {
 		mapped.IPSubnetworks = append(mapped.IPSubnetworks, condition.IpSubnetworks...)
 		mapped.Regions = append(mapped.Regions, condition.Regions...)
 		mapped.RequiredAccessLevels = append(mapped.RequiredAccessLevels, condition.RequiredAccessLevels...)
@@ -82,8 +91,14 @@ func mapAccessLevel(level *accesscontextmanager.AccessLevel) AccessLevel {
 		if condition.DevicePolicy == nil {
 			continue
 		}
-
 		mapped.HasDevicePolicy = true
+
+		// The device policy is a requirement of the level only when every
+		// condition applies and this one is not negated. A negated condition
+		// is met by a request that fails any of its settings.
+		if !everyConditionApplies || condition.Negate {
+			continue
+		}
 		if condition.DevicePolicy.RequireScreenlock {
 			mapped.RequiresScreenlock = true
 		}

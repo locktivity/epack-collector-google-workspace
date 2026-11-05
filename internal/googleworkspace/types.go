@@ -49,6 +49,10 @@ type CustomerUsageReport struct {
 	Date     string
 	Warnings []ReportWarning
 
+	// Missing lists the requested parameters the report left out. Their
+	// fields read 0 but were not reported.
+	Missing []string
+
 	NumUsers          int64
 	NumSuspendedUsers int64
 	NumArchivedUsers  int64
@@ -144,7 +148,9 @@ type AccessPolicy struct {
 }
 
 // AccessLevel captures the Access Context Manager access level details needed
-// to summarize device-policy configuration.
+// to summarize device-policy configuration. HasDevicePolicy is set when any
+// condition has a device policy. The other device-policy fields come only
+// from device policies that every request has to meet.
 type AccessLevel struct {
 	Name                          string
 	Title                         string
@@ -255,8 +261,19 @@ type PasswordPolicy struct {
 	ExpirationDays             int // 0 means passwords never expire
 }
 
+// SessionPolicy is one session controls policy from the Policy API.
+type SessionPolicy struct {
+	WebSessionSeconds float64 // the web session length, always above 0
+}
+
+// LessSecureAppsPolicy is one less secure apps policy from the Policy API.
+type LessSecureAppsPolicy struct {
+	Allowed bool // users can reach apps that use less secure sign-in
+}
+
 // Client defines the Google Workspace operations needed by the collector.
 type Client interface {
+	SignIn(ctx context.Context) error
 	GetCustomer(ctx context.Context, customerKey string) (Customer, error)
 	GetCustomerUsageReport(ctx context.Context, customerID, date string) (CustomerUsageReport, error)
 	ListUsers(ctx context.Context, customerKey string, callback func([]User) error) error
@@ -277,4 +294,6 @@ type Client interface {
 	ListAccessPolicies(ctx context.Context, parent string, callback func([]AccessPolicy) error) error
 	ListAccessLevels(ctx context.Context, policyName string, callback func([]AccessLevel) error) error
 	ListPasswordPolicies(ctx context.Context, customerID string, callback func([]PasswordPolicy) error) error
+	ListSessionPolicies(ctx context.Context, customerID string, callback func([]SessionPolicy) error) error
+	ListLessSecureAppsPolicies(ctx context.Context, customerID string, callback func([]LessSecureAppsPolicy) error) error
 }

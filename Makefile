@@ -1,8 +1,9 @@
-.PHONY: build test lint lint-forbidden-data clean sdk-test sdk-run
+.PHONY: build test lint lint-forbidden-data clean trace-map sdk-test sdk-run
 
 BINARY_NAME := epack-collector-google-workspace
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT := $(shell commit=$$(git rev-parse HEAD 2>/dev/null) && echo "$$commit" || echo "unknown")
+EPACK_VERSION = $(shell go list -m -f '{{.Version}}' github.com/locktivity/epack)
 
 # Build the collector binary for the current platform
 build:
@@ -38,6 +39,11 @@ lint-forbidden-data:
 # Clean build artifacts
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*
+
+# Rewrites docs/schema/trace-map.json from the collectortest suites and the
+# source, at the epack version go.mod pins, as CI checks it. Commit the result.
+trace-map:
+	go run -tags components github.com/locktivity/epack/cmd/epack@$(EPACK_VERSION) sdk map
 
 # SDK development commands (requires epack with components build)
 sdk-test: build

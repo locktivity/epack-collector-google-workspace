@@ -2,6 +2,7 @@ package googleworkspace
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func TestPasswordPolicyShape(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	client, err := NewClient(ctx, adminEmail, AuthConfig{CredentialsJSON: creds})
+	client, err := NewClient(ctx, adminEmail, AuthConfig{CredentialsJSON: creds}, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}

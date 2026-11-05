@@ -124,14 +124,34 @@ func TestAggregatePasswordPoliciesNeverExpiresBeatsAnyFiniteExpiry(t *testing.T)
 	}
 }
 
-func TestAggregatePasswordPoliciesCountsPolicies(t *testing.T) {
+// Two org units set to the same rules have one password policy between them.
+func TestAggregatePasswordPoliciesCountsDistinctPolicies(t *testing.T) {
 	policies := []googleworkspace.PasswordPolicy{
 		{MinimumLength: 12, AllowedStrength: "STRONG", EnforceRequirementsAtLogin: true},
 		{MinimumLength: 10, AllowedStrength: "STRONG", EnforceRequirementsAtLogin: true},
 		{MinimumLength: 8, AllowedStrength: "STRONG", EnforceRequirementsAtLogin: true},
+		{MinimumLength: 12, AllowedStrength: "STRONG", EnforceRequirementsAtLogin: true},
 	}
 	if got := aggregatePasswordPolicies(policies); got.DistinctPolicies != 3 {
 		t.Fatalf("DistinctPolicies = %d, want 3", got.DistinctPolicies)
+	}
+	same := googleworkspace.PasswordPolicy{MinimumLength: 12, MaximumLength: 100, AllowedStrength: "STRONG", EnforceRequirementsAtLogin: true, ExpirationDays: 90}
+	if got := aggregatePasswordPolicies([]googleworkspace.PasswordPolicy{same, same}); got.DistinctPolicies != 1 {
+		t.Fatalf("DistinctPolicies = %d for two policies with the same rules, want 1", got.DistinctPolicies)
+	}
+}
+
+// With no password policy in the Policy API's answer, the policy is left out
+// with a vendor_error gap. The sign-in settings get the same gap.
+func TestScanPasswordPolicyWithNoPolicyLeavesAGap(t *testing.T) {
+	rec := &componentsdk.Recorder{}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Recorder: rec}, &mockClient{})
+	if policy := c.scanPasswordPolicy(context.Background(), scanScope{customerID: "C123"}); policy != nil {
+		t.Fatalf("policy = %+v, want it left out", policy)
+	}
+	gaps := rec.Gaps()
+	if len(gaps) != 1 || gaps[0].Pointer != "/passwords/policy" || gaps[0].Code != componentsdk.CodeVendorError {
+		t.Errorf("gaps = %+v, want one vendor_error gap at /passwords/policy", gaps)
 	}
 }
 
@@ -227,9 +247,7 @@ func TestScanPasswordPolicyPermissionFailuresDegrade(t *testing.T) {
 
 			// The outcome percentages come from the usage report and must
 			// survive a policy failure untouched.
-			if posture.Passwords.WeakPasswordPct != 8 {
-				t.Fatalf("WeakPasswordPct = %v, want the usage-report value 8", posture.Passwords.WeakPasswordPct)
-			}
+			wantPct(t, "Passwords.WeakPasswordPct", posture.Passwords.WeakPasswordPct, 8)
 		})
 	}
 }

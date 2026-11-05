@@ -1,6 +1,11 @@
 package collector
 
-import "time"
+import (
+	"net/http"
+	"time"
+
+	"github.com/locktivity/epack/componentsdk"
+)
 
 const (
 	// SchemaVersion is the version of the detailed Google Workspace artifact.
@@ -56,6 +61,12 @@ type Config struct {
 	OnStatus   StatusFunc       `json:"-"`
 	OnProgress ProgressFunc     `json:"-"`
 	Now        func() time.Time `json:"-"`
+
+	// HTTPClient is the client every request goes out through. Run passes
+	// the SDK's.
+	HTTPClient *http.Client `json:"-"`
+	// Recorder takes a gap for each value the collector leaves out.
+	Recorder *componentsdk.Recorder `json:"-"`
 }
 
 // OrgPosture is the detailed Google Workspace posture artifact.
@@ -63,15 +74,16 @@ type OrgPosture struct {
 	SchemaVersion    string               `json:"schema_version"`
 	CollectedAt      string               `json:"collected_at"`
 	CollectedAtLevel string               `json:"collected_at_level"`
-	UsageReportDate  string               `json:"usage_report_date"`
+	UsageReportDate  *string              `json:"usage_report_date"`
 	Provider         string               `json:"provider"`
-	OrgDomain        string               `json:"org_domain"`
-	CustomerID       string               `json:"customer_id"`
+	OrgDomain        *string              `json:"org_domain"`
+	CustomerID       *string              `json:"customer_id"`
 	Users            UserMetrics          `json:"users"`
 	Activity         *ActivityMetrics     `json:"activity,omitempty"`
 	Authentication   AuthMetrics          `json:"authentication"`
 	Admins           AdminMetrics         `json:"admins"`
 	Passwords        PasswordMetrics      `json:"passwords"`
+	SignIn           *SignInPolicy        `json:"sign_in,omitempty"`
 	Apps             *AppMetrics          `json:"apps,omitempty"`
 	DeviceAccess     *DeviceAccessMetrics `json:"device_access,omitempty"`
 
@@ -88,6 +100,28 @@ type OrgPosture struct {
 	Vault                *Vault                `json:"vault,omitempty"`
 
 	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
+
+	// counts holds the counts behind the percentages above. The normalized
+	// artifact's percentages are taken from them.
+	counts postureCounts
+}
+
+// postureCounts holds the user counts that percentages are taken from. A
+// count is nil when the read that gives it failed, or when the usage report
+// left out its parameter or its total.
+type postureCounts struct {
+	// From the live Directory scan, out of Users.Active or, for the
+	// privileged count, out of Admins.PrivilegedUsersCount.
+	inactiveUsers         *int
+	enrolled2SVUsers      *int
+	enforced2SVUsers      *int
+	privileged2SVEnrolled *int
+
+	// From the usage report, out of Users.Total.
+	passkeyUsers       *int
+	lockedUsers        *int
+	weakPasswordUsers  *int
+	shortPasswordUsers *int
 }
 
 // Vault is the eDiscovery surface. Trust emits the licensed flag plus matter /
@@ -95,8 +129,8 @@ type OrgPosture struct {
 // metadata. Hold search queries and contents are never emitted.
 type Vault struct {
 	Licensed     bool                 `json:"licensed"`
-	MattersCount int                  `json:"matters_count"`
-	HoldsCount   int                  `json:"holds_count"`
+	MattersCount *int                 `json:"matters_count"`
+	HoldsCount   *int                 `json:"holds_count"`
 	Matters      []VaultMatterSummary `json:"matters,omitempty"`
 	Holds        []VaultHoldSummary   `json:"holds,omitempty"`
 }
@@ -106,7 +140,7 @@ type VaultMatterSummary struct {
 	MatterID  string `json:"matter_id"`
 	Name      string `json:"name,omitempty"`
 	State     string `json:"state,omitempty"`
-	HoldCount int    `json:"hold_count"`
+	HoldCount *int   `json:"hold_count"`
 }
 
 // VaultHoldSummary is a per-hold row (internal level). Scope summary only; no
@@ -125,9 +159,9 @@ type VaultHoldSummary struct {
 // and per-domain inventories; internal adds the SSO service host (host only).
 // IdP signing certs, SAML metadata XML, and full SSO URLs are never emitted.
 type DomainSettings struct {
-	SSOConfigured       bool                 `json:"sso_configured"`
-	SAMLProfileCount    int                  `json:"saml_profile_count"`
-	VerifiedDomainCount int                  `json:"verified_domain_count"`
+	SSOConfigured       *bool                `json:"sso_configured"`
+	SAMLProfileCount    *int                 `json:"saml_profile_count"`
+	VerifiedDomainCount *int                 `json:"verified_domain_count"`
 	PrimaryDomain       string               `json:"primary_domain,omitempty"`
 	SAMLProfiles        []SAMLProfileSummary `json:"saml_profiles,omitempty"`
 	Domains             []DomainSummary      `json:"domains,omitempty"`
@@ -153,7 +187,7 @@ type DomainSummary struct {
 // appear as their email domain only (never the full address).
 type DriveExternalSharing struct {
 	CountWindowDays     int               `json:"count_window_days"`
-	ExternalShareEvents int               `json:"external_share_events"`
+	ExternalShareEvents *int              `json:"external_share_events"`
 	PublicOnWebEvents   int               `json:"public_on_web_events"`
 	EventWindowDays     int               `json:"event_window_days,omitempty"`
 	Events              []DriveShareEvent `json:"events,omitempty"`
@@ -278,7 +312,7 @@ type OrgUnit struct {
 	Path             string `json:"path"`
 	ParentPath       string `json:"parent_path,omitempty"`
 	Description      string `json:"description,omitempty"`
-	UserCount        int    `json:"user_count"`
+	UserCount        *int   `json:"user_count"`
 	BlockInheritance bool   `json:"block_inheritance"`
 }
 
@@ -288,7 +322,7 @@ type Groups struct {
 	Total                     int     `json:"total"`
 	AdminCreated              int     `json:"admin_created"`
 	UserCreated               int     `json:"user_created"`
-	ExternalMembersAllowed    int     `json:"external_members_allowed,omitempty"`
+	ExternalMembersAllowed    *int    `json:"external_members_allowed"`
 	Inventory                 []Group `json:"inventory,omitempty"`
 	TruncatedInventory        bool    `json:"truncated_inventory,omitempty"`
 	TruncatedInventoryDropped int     `json:"truncated_inventory_dropped,omitempty"`
@@ -302,10 +336,13 @@ type Group struct {
 	Description          string        `json:"description,omitempty"`
 	MemberCount          int           `json:"member_count"`
 	AdminCreated         bool          `json:"admin_created"`
-	AllowExternalMembers bool          `json:"allow_external_members"`
+	AllowExternalMembers *bool         `json:"allow_external_members"`
 	WhoCanJoin           string        `json:"who_can_join,omitempty"`
 	WhoCanPostMessage    string        `json:"who_can_post_message,omitempty"`
 	Members              []GroupMember `json:"members,omitempty"`
+
+	settingsErr error
+	membersErr  error
 }
 
 // GroupMember is a single group membership row (internal level).
@@ -319,16 +356,19 @@ type GroupMember struct {
 
 // UserMetrics contains user population counts. Inventory carries the per-user
 // rows surfaced at audit and above; it is omitted entirely at trust.
+// Total, Suspended, Archived, and LockedPct come from the usage report; Active
+// and InactivePct from the live Directory user scan.
 type UserMetrics struct {
-	Total                     int     `json:"total"`
-	Suspended                 int     `json:"suspended"`
-	Archived                  int     `json:"archived"`
-	LockedPct                 float64 `json:"locked_pct"`
-	InactivePct               float64 `json:"inactive_pct"`
-	InactiveDays              int     `json:"inactive_days"`
-	Inventory                 []User  `json:"inventory,omitempty"`
-	TruncatedInventory        bool    `json:"truncated_inventory,omitempty"`
-	TruncatedInventoryDropped int     `json:"truncated_inventory_dropped,omitempty"`
+	Total                     *int     `json:"total"`
+	Suspended                 *int     `json:"suspended"`
+	Archived                  *int     `json:"archived"`
+	Active                    *int     `json:"active"`
+	LockedPct                 *float64 `json:"locked_pct"`
+	InactivePct               *float64 `json:"inactive_pct"`
+	InactiveDays              int      `json:"inactive_days"`
+	Inventory                 []User   `json:"inventory,omitempty"`
+	TruncatedInventory        bool     `json:"truncated_inventory,omitempty"`
+	TruncatedInventoryDropped int      `json:"truncated_inventory_dropped,omitempty"`
 }
 
 // User is a per-user inventory row emitted at audit and above. Per-user passkey
@@ -356,28 +396,28 @@ type User struct {
 
 // ActivityMetrics contains login activity percentages (audit and above).
 type ActivityMetrics struct {
-	Active7dPct  float64 `json:"active_7d_pct"`
-	Active30dPct float64 `json:"active_30d_pct"`
+	Active7dPct  *float64 `json:"active_7d_pct"`
+	Active30dPct *float64 `json:"active_30d_pct"`
 }
 
 // AuthMetrics contains two-step verification and passkey metrics.
 type AuthMetrics struct {
-	TwoSVEnrolledPct  float64 `json:"2sv_enrolled_pct"`
-	TwoSVEnforcedPct  float64 `json:"2sv_enforced_pct"`
-	TwoSVProtectedPct float64 `json:"2sv_protected_pct"`
-	PasskeyUsersPct   float64 `json:"passkey_users_pct"`
-	SecurityKeysTotal int     `json:"security_keys_total"`
+	TwoSVEnrolledPct  *float64 `json:"2sv_enrolled_pct"`
+	TwoSVEnforcedPct  *float64 `json:"2sv_enforced_pct"`
+	TwoSVProtectedPct *float64 `json:"2sv_protected_pct"`
+	PasskeyUsersPct   *float64 `json:"passkey_users_pct"`
+	SecurityKeysTotal *int     `json:"security_keys_total"`
 }
 
 // AdminMetrics contains privileged user counts plus 2-step enrollment and
 // enforcement. Inventory and CustomRoles carry the per-admin and per-role detail
 // surfaced at audit and above; both are omitted at trust.
 type AdminMetrics struct {
-	PrivilegedUsersCount          int          `json:"privileged_users_count"`
-	SuperAdminCount               int          `json:"super_admin_count"`
-	DelegatedAdminCount           int          `json:"delegated_admin_count"`
-	PrivilegedUsers2SVEnrolledPct float64      `json:"privileged_users_2sv_enrolled_pct"`
-	PrivilegedUsers2SVEnforcedPct float64      `json:"privileged_users_2sv_enforced_pct"`
+	PrivilegedUsersCount          *int         `json:"privileged_users_count"`
+	SuperAdminCount               *int         `json:"super_admin_count"`
+	DelegatedAdminCount           *int         `json:"delegated_admin_count"`
+	PrivilegedUsers2SVEnrolledPct *float64     `json:"privileged_users_2sv_enrolled_pct"`
+	PrivilegedUsers2SVEnforcedPct *float64     `json:"privileged_users_2sv_enforced_pct"`
 	Inventory                     []Admin      `json:"inventory,omitempty"`
 	CustomRoles                   []CustomRole `json:"custom_roles,omitempty"`
 }
@@ -405,8 +445,8 @@ type CustomRole struct {
 
 // PasswordMetrics contains password hygiene metrics.
 type PasswordMetrics struct {
-	WeakPasswordPct               float64 `json:"weak_password_pct"`
-	PasswordLengthNonCompliantPct float64 `json:"password_length_non_compliant_pct"`
+	WeakPasswordPct               *float64 `json:"weak_password_pct"`
+	PasswordLengthNonCompliantPct *float64 `json:"password_length_non_compliant_pct"`
 
 	Policy *PasswordPolicyConfig `json:"policy,omitempty"`
 }
@@ -433,9 +473,18 @@ type PasswordPolicyConfig struct {
 	DistinctPolicies           int    `json:"distinct_policies"`
 }
 
+// SignInPolicy holds the tenant's sign-in settings from the Policy API, each
+// the weakest value any org unit or group gets. A value is left out with a
+// gap when its policies could not be read, and the object is left out when
+// neither could be.
+type SignInPolicy struct {
+	WebSessionDurationMaxMinutes *int  `json:"web_session_duration_max_minutes,omitempty"`
+	LessSecureAppsAllowed        *bool `json:"less_secure_apps_allowed,omitempty"`
+}
+
 // AppMetrics contains application security metrics (internal only).
 type AppMetrics struct {
-	AuthorizedAppsCount int `json:"authorized_apps_count"`
+	AuthorizedAppsCount *int `json:"authorized_apps_count"`
 }
 
 // DeviceAccessMetrics captures deny-event evidence that Context-Aware Access
@@ -493,14 +542,13 @@ type Diagnostics struct {
 	Warnings         []string `json:"warnings,omitempty"`
 }
 
-// NewOrgPosture creates an initialized posture document.
-func NewOrgPosture(domain, customerID, reportDate string, collectedAt time.Time) *OrgPosture {
+// NewOrgPosture creates an initialized posture document. The customer and the
+// usage report fill in their fields as they are read.
+func NewOrgPosture(collectedAt time.Time) *OrgPosture {
 	return &OrgPosture{
-		SchemaVersion:   SchemaVersion,
-		CollectedAt:     collectedAt.UTC().Format(time.RFC3339),
-		UsageReportDate: reportDate,
-		Provider:        "google-workspace",
-		OrgDomain:       domain,
-		CustomerID:      customerID,
+		SchemaVersion: SchemaVersion,
+		CollectedAt:   collectedAt.UTC().Format(time.RFC3339),
+		Provider:      "google-workspace",
+		Users:         UserMetrics{InactiveDays: DefaultInactiveDays},
 	}
 }

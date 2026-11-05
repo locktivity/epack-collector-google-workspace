@@ -12,7 +12,7 @@ authentication mode you use; step 4 is where they differ.
 | API | Enable it for |
 |---|---|
 | Admin SDK API | Every run |
-| Cloud Identity API | Every run (password policy; SAML profiles at audit and above) |
+| Cloud Identity API | Every run (password policy, web session length, and less secure apps; SAML profiles at audit and above) |
 | IAM Service Account Credentials API | `auth_mode: oidc` only |
 | Groups Settings API | audit and internal |
 | Google Vault API | audit and internal (also needs a Vault license) |
@@ -92,7 +92,7 @@ This key grants access to your tenant. Treat it as a credential.
 | Customer + Users | `admin.directory.user.readonly`, `admin.directory.customer.readonly` | trust |
 | Activity / usage | `admin.reports.usage.readonly` | trust |
 | Context-Aware Access (device_access) | `admin.reports.audit.readonly` | trust |
-| Password policy | `cloud-identity.policies.readonly` | trust |
+| Password policy, web session length, less secure apps | `cloud-identity.policies.readonly` | trust |
 | Audit logs (admin, login, token, drive sharing) | `admin.reports.audit.readonly` | audit / internal |
 | Admin roles | `admin.directory.rolemanagement.readonly` | audit / internal |
 | Groups | `admin.directory.group.readonly`, `admin.directory.group.member.readonly`, `apps.groups.settings` | audit / internal |
@@ -115,6 +115,10 @@ Grants are not retroactive. If you add a scope later, re-grant it here.
 Set `admin_email` to a Super Admin account; several of the admin API reads
 require one. The read-only scopes from step 5 still limit what the collector
 can read. A common setup is a dedicated `epack-collector@<domain>` user.
+
+With a narrower admin role the run still succeeds, but `customer_id` and
+`org_domain` are null, the normalized artifact is not emitted, and the
+surfaces that role cannot read are left out with a diagnostic.
 
 ## Optional: Access Context Manager enrichment
 
@@ -153,10 +157,12 @@ app assignment and monitor-mode details are not fully exposed by API.
 
 ## Troubleshooting
 
-A missing scope, API, or role never fails the run, except for the tenant
-record: it is read first, requires a Super Admin, and stops the run when
-denied (step 6). Any other affected surface is omitted and a diagnostic says
-which of the three is missing, because each is fixed in a different console.
+A missing scope, API, or role never fails the run: the affected surface is
+omitted and a diagnostic says which of the three is missing, because each is
+fixed in a different console. The collector result,
+`artifacts/google-workspace.collector-result.json`, lists every value left out
+with a code. The run fails only when it cannot sign in, which exits 3, or when
+the configuration is invalid, which exits 2.
 
 ### The run fails to start
 
@@ -178,9 +184,8 @@ something is collected, so setup mistakes appear here rather than at startup.
 | `roles/iam.serviceAccountTokenCreator` | Grant that role to the service account on itself (step 4, item 5) |
 | `iamcredentials.googleapis.com` | Enable the IAM Service Account Credentials API |
 | `the workload identity exchange was rejected` | Check the pool, the provider's attribute condition, and `roles/iam.workloadIdentityUser` |
-| 401 Unauthorized | Confirm `admin_email` is a real admin, delegation is enabled, and the Client ID matches |
-| `admin_email must be a Super Admin` | Impersonate a Super Admin (step 6); narrower admin roles, including custom ones, cannot read the tenant record |
-| `admin.directory.customer.readonly scope is not granted` | Re-check the scope list from step 5 in the admin console |
+| `invalid_grant` | Google rejected the assertion: check that the key is current, `admin_email` is a real user, delegation is enabled, and the Client ID matches |
+| `unauthorized_client` | The delegation grant lacks `admin.directory.user.readonly`, which every run reads: re-check the scope list from step 5 |
 
 ### A surface is missing from the artifact
 
@@ -188,6 +193,7 @@ Check the diagnostics block. It names which of the three grants is missing.
 
 | Diagnostic | Fix |
 |---|---|
+| `surface customer: impersonation user lacks required admin role: Super Admin` | Impersonate a Super Admin (step 6); narrower admin roles, including custom ones, cannot read the tenant record |
 | scope denied | Add that scope in the admin console and re-grant |
 | `SERVICE_DISABLED` | Enable that API in the Cloud project |
 | admin role | Give the impersonated user a role that can read the surface |
@@ -200,7 +206,25 @@ absent policy never reads as a permissive one. The diagnostics distinguish a
 missing scope, a disabled API, an insufficient role, an edition without the
 Policy API, and a tenant that exposes no policy.
 
+`sign_in.web_session_duration_max_minutes` and `less_secure_apps_allowed` come
+from the same Policy API, so they are left out for the same reasons, each with
+a gap. A tenant whose Policy API returns no password, session or less secure
+apps policy gets a `vendor_error` gap on that value.
+
+### Which permission a gap names
+
+A `permission_denied` gap names what to grant as `missing_permission`, when
+Google's refusal shows it. For a delegation grant without a surface's scope,
+that is the scope, such as
+`https://www.googleapis.com/auth/cloud-identity.policies.readonly`. For Access
+Context Manager, it is the IAM permission, such as
+`accesscontextmanager.policies.list`. A refusal for an admin role without the
+privilege names none, since the scope is already granted. Each operation in the
+collector result lists the permission its call needs as `permission`.
+
 ### Usage report data is empty
 
 Usage reports cover the previous day, and very new tenants may have none yet.
-The `usage_report_date` field shows which day the artifact covers.
+The `usage_report_date` field shows which day the artifact covers. When no
+report is available for the last 10 days, `usage_report_date` and the values
+from the report are null.

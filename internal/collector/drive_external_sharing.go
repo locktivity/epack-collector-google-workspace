@@ -20,7 +20,9 @@ var driveExternalSharingEvents = []string{driveEventChangeUserAccess, driveEvent
 // Audit emits external-share and public-on-web event counts over a 30-day
 // window; internal adds an event slice over a tighter 7-day window. File names
 // and contents are never emitted; recipients appear as their email domain only.
-// Returns nil (omitted) at trust or on scope / role denial.
+// Returns nil (omitted) at trust or when the events cannot be read. Telling an
+// external recipient from an internal one takes the tenant's primary domain,
+// so the external count and the event slice are left out without it.
 func (c *Collector) scanDriveExternalSharing(ctx context.Context, scope scanScope) *DriveExternalSharing {
 	if !scope.level.AtLeast(componentsdk.LevelAudit) {
 		return nil
@@ -38,17 +40,21 @@ func (c *Collector) scanDriveExternalSharing(ctx context.Context, scope scanScop
 	if includeEvents {
 		result.EventWindowDays = AuditLogWindowDays
 	}
+	domainKnown := scope.primaryDomain != ""
+	externalShares := 0
 	var slice []DriveShareEvent
 
 	for _, e := range events {
-		recipient := e.Parameters["target_user"]
-		recipientDomain := emailDomain(recipient)
-		isExternal := recipientDomain != "" && !strings.EqualFold(recipientDomain, scope.primaryDomain)
+		recipientDomain := targetDomain(e.Parameters["target_user"])
+		// A change_user_access event whose new role is none took the
+		// target's access away.
+		isExternal := e.Name == driveEventChangeUserAccess && driveTargetRole(e) != "none" &&
+			recipientDomain != "" && !strings.EqualFold(recipientDomain, scope.primaryDomain)
 
 		switch e.Name {
 		case driveEventChangeUserAccess:
 			if isExternal {
-				result.ExternalShareEvents++
+				externalShares++
 			}
 		case driveEventChangeDocumentVisbility:
 			if isPublicVisibility(e) {
@@ -56,12 +62,16 @@ func (c *Collector) scanDriveExternalSharing(ctx context.Context, scope scanScop
 			}
 		}
 
-		if includeEvents && !e.Time.Before(eventWindowStart) && (isExternal || e.Name == driveEventChangeDocumentVisbility) {
+		if includeEvents && domainKnown && !e.Time.Before(eventWindowStart) && (isExternal || e.Name == driveEventChangeDocumentVisbility) {
 			row := DriveShareEvent{
 				FileID:          e.Parameters["doc_id"],
 				SharerEmail:     e.ActorEmail,
 				RecipientDomain: recipientDomain,
-				TargetRole:      driveTargetRole(e),
+			}
+			// On a visibility change, new_value holds the new link
+			// visibility, which is not a role.
+			if e.Name == driveEventChangeUserAccess {
+				row.TargetRole = driveTargetRole(e)
 			}
 			if !e.Time.IsZero() {
 				row.Time = e.Time.UTC().Format(time.RFC3339)
@@ -70,28 +80,42 @@ func (c *Collector) scanDriveExternalSharing(ctx context.Context, scope scanScop
 		}
 	}
 
+	if !domainKnown {
+		c.gaps.leaveOutAs("/org_domain", "/drive_external_sharing/external_share_events")
+		if includeEvents {
+			c.gaps.leaveOutAs("/org_domain", "/drive_external_sharing/events")
+		}
+		return result
+	}
+	result.ExternalShareEvents = &externalShares
 	if includeEvents {
-		result.Events, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, slice, AuditEventsCap, "drive external-sharing event slice", func(a, b DriveShareEvent) bool {
+		result.Events, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, slice, AuditEventsCap, "drive external-sharing event slice", "/drive_external_sharing/events", func(a, b DriveShareEvent) bool {
 			return a.Time > b.Time
 		})
 	}
 	return result
 }
 
-// emailDomain returns the host part of an email address, or "" if there is no
-// "@". The full address is never retained; only the domain leaves this function
-// (sharing-recipient privacy).
-func emailDomain(email string) string {
-	parts := strings.SplitN(email, "@", 2)
-	if len(parts) != 2 {
-		return ""
+// targetDomain returns the domain of a share's target_user. The target is an
+// email address, or the name of a domain when the file was shared with a
+// whole domain. The full address is never retained. Only the domain leaves
+// this function (sharing-recipient privacy).
+func targetDomain(target string) string {
+	if _, domain, ok := strings.Cut(target, "@"); ok {
+		return domain
 	}
-	return parts[1]
+	return target
 }
 
+// isPublicVisibility checks whether a visibility change left the file public
+// on the web or open to anyone with the link. Under public_in_the_domain and
+// people_within_domain_with_link, only the domain's audience can open it.
 func isPublicVisibility(e googleworkspace.AuditEvent) bool {
-	v := strings.ToLower(e.Parameters["visibility"])
-	return strings.Contains(v, "public") || strings.Contains(v, "people_with_link")
+	switch strings.ToLower(e.Parameters["visibility"]) {
+	case "public_on_the_web", "people_with_link":
+		return true
+	}
+	return false
 }
 
 func driveTargetRole(e googleworkspace.AuditEvent) string {

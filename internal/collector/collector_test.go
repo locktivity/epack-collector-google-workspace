@@ -16,6 +16,8 @@ import (
 )
 
 type mockClient struct {
+	signInErr error
+
 	customer    googleworkspace.Customer
 	customerErr error
 
@@ -31,6 +33,11 @@ type mockClient struct {
 
 	passwordPolicies    []googleworkspace.PasswordPolicy
 	passwordPoliciesErr error
+
+	sessionPolicies          []googleworkspace.SessionPolicy
+	sessionPoliciesErr       error
+	lessSecureAppPolicies    []googleworkspace.LessSecureAppsPolicy
+	lessSecureAppPoliciesErr error
 
 	roles              []googleworkspace.Role
 	rolesErr           error
@@ -84,6 +91,10 @@ type mockClient struct {
 type mockReportResult struct {
 	report googleworkspace.CustomerUsageReport
 	err    error
+}
+
+func (m *mockClient) SignIn(ctx context.Context) error {
+	return m.signInErr
 }
 
 func (m *mockClient) GetCustomer(ctx context.Context, customerKey string) (googleworkspace.Customer, error) {
@@ -171,6 +182,26 @@ func (m *mockClient) ListPasswordPolicies(ctx context.Context, customerID string
 		return nil
 	}
 	return callback(m.passwordPolicies)
+}
+
+func (m *mockClient) ListSessionPolicies(ctx context.Context, customerID string, callback func([]googleworkspace.SessionPolicy) error) error {
+	if m.sessionPoliciesErr != nil {
+		return m.sessionPoliciesErr
+	}
+	if len(m.sessionPolicies) == 0 {
+		return nil
+	}
+	return callback(m.sessionPolicies)
+}
+
+func (m *mockClient) ListLessSecureAppsPolicies(ctx context.Context, customerID string, callback func([]googleworkspace.LessSecureAppsPolicy) error) error {
+	if m.lessSecureAppPoliciesErr != nil {
+		return m.lessSecureAppPoliciesErr
+	}
+	if len(m.lessSecureAppPolicies) == 0 {
+		return nil
+	}
+	return callback(m.lessSecureAppPolicies)
 }
 
 func (m *mockClient) ListVaultMatters(ctx context.Context, callback func([]googleworkspace.VaultMatter) error) error {
@@ -358,29 +389,17 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 	}
 
 	// Top-level fields.
-	if posture.OrgDomain != "example.com" {
-		t.Fatalf("OrgDomain = %q, want example.com", posture.OrgDomain)
-	}
-	if posture.CustomerID != "C123" {
-		t.Fatalf("CustomerID = %q, want C123", posture.CustomerID)
-	}
-	if posture.UsageReportDate != "2026-04-07" {
-		t.Fatalf("UsageReportDate = %q, want 2026-04-07", posture.UsageReportDate)
-	}
+	wantStr(t, "OrgDomain", posture.OrgDomain, "example.com")
+	wantStr(t, "CustomerID", posture.CustomerID, "C123")
+	wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-07")
 	if posture.CollectedAt != now.Format(time.RFC3339) {
 		t.Fatalf("CollectedAt = %q, want %q", posture.CollectedAt, now.Format(time.RFC3339))
 	}
 
 	// Users (from Reports API).
-	if posture.Users.Total != 100 {
-		t.Fatalf("Users.Total = %d, want 100", posture.Users.Total)
-	}
-	if posture.Users.Suspended != 5 {
-		t.Fatalf("Users.Suspended = %d, want 5", posture.Users.Suspended)
-	}
-	if posture.Users.Archived != 3 {
-		t.Fatalf("Users.Archived = %d, want 3", posture.Users.Archived)
-	}
+	wantInt(t, "Users.Total", posture.Users.Total, 100)
+	wantInt(t, "Users.Suspended", posture.Users.Suspended, 5)
+	wantInt(t, "Users.Archived", posture.Users.Archived, 3)
 
 	// Activity must not appear at trust (audit+ only).
 	if posture.Activity != nil {
@@ -388,29 +407,15 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 	}
 
 	// Authentication.
-	if posture.Authentication.TwoSVEnrolledPct != 42.86 {
-		t.Fatalf("Authentication.TwoSVEnrolledPct = %.2f, want 42.86 from live Directory enrollment", posture.Authentication.TwoSVEnrolledPct)
-	}
-	if posture.Authentication.TwoSVEnforcedPct != 42.86 {
-		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 42.86 from live Directory enforcement", posture.Authentication.TwoSVEnforcedPct)
-	}
-	if posture.Authentication.TwoSVProtectedPct != 70.0 {
-		t.Fatalf("Authentication.TwoSVProtectedPct = %.2f, want 70.00", posture.Authentication.TwoSVProtectedPct)
-	}
-	if posture.Authentication.PasskeyUsersPct != 10.0 {
-		t.Fatalf("Authentication.PasskeyUsersPct = %.2f, want 10.00", posture.Authentication.PasskeyUsersPct)
-	}
-	if posture.Authentication.SecurityKeysTotal != 25 {
-		t.Fatalf("Authentication.SecurityKeysTotal = %d, want 25", posture.Authentication.SecurityKeysTotal)
-	}
+	wantPct(t, "Authentication.TwoSVEnrolledPct", posture.Authentication.TwoSVEnrolledPct, 42.86)
+	wantPct(t, "Authentication.TwoSVEnforcedPct", posture.Authentication.TwoSVEnforcedPct, 42.86)
+	wantPct(t, "Authentication.TwoSVProtectedPct", posture.Authentication.TwoSVProtectedPct, 70.0)
+	wantPct(t, "Authentication.PasskeyUsersPct", posture.Authentication.PasskeyUsersPct, 10.0)
+	wantInt(t, "Authentication.SecurityKeysTotal", posture.Authentication.SecurityKeysTotal, 25)
 
 	// Passwords.
-	if posture.Passwords.WeakPasswordPct != 8.0 {
-		t.Fatalf("Passwords.WeakPasswordPct = %.2f, want 8.00", posture.Passwords.WeakPasswordPct)
-	}
-	if posture.Passwords.PasswordLengthNonCompliantPct != 4.0 {
-		t.Fatalf("Passwords.PasswordLengthNonCompliantPct = %.2f, want 4.00", posture.Passwords.PasswordLengthNonCompliantPct)
-	}
+	wantPct(t, "Passwords.WeakPasswordPct", posture.Passwords.WeakPasswordPct, 8.0)
+	wantPct(t, "Passwords.PasswordLengthNonCompliantPct", posture.Passwords.PasswordLengthNonCompliantPct, 4.0)
 
 	// Apps must not appear at trust (internal only).
 	if posture.Apps != nil {
@@ -419,36 +424,22 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 
 	// Admins (from Directory API, active only).
 	// super admins: admin1, admin2, both (suspended-admin excluded)
-	if posture.Admins.SuperAdminCount != 3 {
-		t.Fatalf("Admins.SuperAdminCount = %d, want 3", posture.Admins.SuperAdminCount)
-	}
+	wantInt(t, "Admins.SuperAdminCount", posture.Admins.SuperAdminCount, 3)
 	// delegated admins: deleg, both (archived-admin excluded)
-	if posture.Admins.DelegatedAdminCount != 2 {
-		t.Fatalf("Admins.DelegatedAdminCount = %d, want 2", posture.Admins.DelegatedAdminCount)
-	}
+	wantInt(t, "Admins.DelegatedAdminCount", posture.Admins.DelegatedAdminCount, 2)
 	// privileged total: admin1, admin2, deleg, both = 4
 	// privileged with 2SV enforced: admin1, deleg, both = 3
 	// 3/4 = 75.0
-	if posture.Admins.PrivilegedUsersCount != 4 {
-		t.Fatalf("Admins.PrivilegedUsersCount = %d, want 4", posture.Admins.PrivilegedUsersCount)
-	}
-	if posture.Admins.PrivilegedUsers2SVEnrolledPct != 75.0 {
-		t.Fatalf("Admins.PrivilegedUsers2SVEnrolledPct = %.2f, want 75.00", posture.Admins.PrivilegedUsers2SVEnrolledPct)
-	}
-	if posture.Admins.PrivilegedUsers2SVEnforcedPct != 75.0 {
-		t.Fatalf("Admins.PrivilegedUsers2SVEnforcedPct = %.2f, want 75.00", posture.Admins.PrivilegedUsers2SVEnforcedPct)
-	}
+	wantInt(t, "Admins.PrivilegedUsersCount", posture.Admins.PrivilegedUsersCount, 4)
+	wantPct(t, "Admins.PrivilegedUsers2SVEnrolledPct", posture.Admins.PrivilegedUsers2SVEnrolledPct, 75.0)
+	wantPct(t, "Admins.PrivilegedUsers2SVEnforcedPct", posture.Admins.PrivilegedUsers2SVEnforcedPct, 75.0)
 
 	// Locked (from Reports API): 2/100 = 2.0%
-	if posture.Users.LockedPct != 2.0 {
-		t.Fatalf("Users.LockedPct = %.2f, want 2.00", posture.Users.LockedPct)
-	}
+	wantPct(t, "Users.LockedPct", posture.Users.LockedPct, 2.0)
 
 	// Inactive (from Directory API): 7 active users, 2 inactive (inactive-user + never-logged-in)
 	// 2/7 = 28.57%
-	if posture.Users.InactivePct != 28.57 {
-		t.Fatalf("Users.InactivePct = %.2f, want 28.57", posture.Users.InactivePct)
-	}
+	wantPct(t, "Users.InactivePct", posture.Users.InactivePct, 28.57)
 	if posture.Users.InactiveDays != DefaultInactiveDays {
 		t.Fatalf("Users.InactiveDays = %d, want %d", posture.Users.InactiveDays, DefaultInactiveDays)
 	}
@@ -775,14 +766,12 @@ func TestCollect_GroupsByLevel(t *testing.T) {
 		if len(g.Inventory) != 2 {
 			t.Fatalf("len(Inventory) = %d, want 2", len(g.Inventory))
 		}
-		if g.ExternalMembersAllowed != 1 {
-			t.Fatalf("ExternalMembersAllowed = %d, want 1 (social)", g.ExternalMembersAllowed)
-		}
+		wantInt(t, "g.ExternalMembersAllowed", g.ExternalMembersAllowed, 1)
 		// Inventory sorts by member count desc: eng (3) before social (1).
 		if g.Inventory[0].Email != "eng@example.com" {
 			t.Fatalf("inventory[0] = %q, want eng (highest member count first)", g.Inventory[0].Email)
 		}
-		if g.Inventory[1].WhoCanJoin != "ALL_IN_DOMAIN_CAN_JOIN" || !g.Inventory[1].AllowExternalMembers {
+		if g.Inventory[1].WhoCanJoin != "ALL_IN_DOMAIN_CAN_JOIN" || g.Inventory[1].AllowExternalMembers == nil || !*g.Inventory[1].AllowExternalMembers {
 			t.Fatalf("social settings wrong: %+v", g.Inventory[1])
 		}
 		for _, row := range g.Inventory {
@@ -860,12 +849,8 @@ func TestCollect_OrgUnitsByLevel(t *testing.T) {
 		for _, row := range ou.Inventory {
 			byPath[row.Path] = row
 		}
-		if byPath["/Eng"].UserCount != 1 {
-			t.Fatalf("/Eng UserCount = %d, want 1", byPath["/Eng"].UserCount)
-		}
-		if byPath["/Eng/Backend"].UserCount != 2 {
-			t.Fatalf("/Eng/Backend UserCount = %d, want 2", byPath["/Eng/Backend"].UserCount)
-		}
+		wantInt(t, "byPath[\"/Eng\"].UserCount", byPath["/Eng"].UserCount, 1)
+		wantInt(t, "byPath[\"/Eng/Backend\"].UserCount", byPath["/Eng/Backend"].UserCount, 2)
 		if !byPath["/Eng/Backend"].BlockInheritance {
 			t.Fatalf("/Eng/Backend BlockInheritance = false, want true")
 		}
@@ -1012,7 +997,7 @@ func TestCollect_AuditSurfacesByLevel(t *testing.T) {
 		if p.LoginAuditLog.SuspiciousLogins != 1 || p.LoginAuditLog.FailedLogins != 1 {
 			t.Fatalf("login counts wrong: %+v", p.LoginAuditLog)
 		}
-		if p.DriveExternalSharing.ExternalShareEvents != 1 || p.DriveExternalSharing.PublicOnWebEvents != 1 {
+		if p.DriveExternalSharing.ExternalShareEvents == nil || *p.DriveExternalSharing.ExternalShareEvents != 1 || p.DriveExternalSharing.PublicOnWebEvents != 1 {
 			t.Fatalf("drive counts wrong: %+v", p.DriveExternalSharing)
 		}
 	})
@@ -1195,7 +1180,7 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 		Now:        func() time.Time { return now },
 	}, client)
 
-	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	posture, err := c.Collect(context.Background(), componentsdk.LevelAudit)
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
@@ -1210,57 +1195,40 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 	if idp.OrgDomain != "example.com" {
 		t.Fatalf("OrgDomain = %q, want example.com", idp.OrgDomain)
 	}
-	// MFACoveragePct uses effective strong-auth coverage. For classic 2SV tenants
-	// this still maps to 2sv_protected_pct; passkey-first tenants can exceed it.
-	// max(70, 10) = 70.0%
-	if idp.UserSecurity.MFACoveragePct != 70.0 {
-		t.Fatalf("MFACoveragePct = %.2f, want 70.00 (derived from effective strong-auth coverage)", idp.UserSecurity.MFACoveragePct)
-	}
-	if idp.UserSecurity.MFAPhishingResistantPct != 10.0 {
-		t.Fatalf("MFAPhishingResistantPct = %.2f, want 10.00", idp.UserSecurity.MFAPhishingResistantPct)
-	}
-	// inactive: 2/5 active users = 40.00%
-	if idp.UserSecurity.InactivePct != 40.0 {
-		t.Fatalf("InactivePct = %.2f, want 40.00", idp.UserSecurity.InactivePct)
-	}
-	// locked: 3/100 = 3.0%
-	if idp.UserSecurity.LockedOutPct != 3.0 {
-		t.Fatalf("LockedOutPct = %.2f, want 3.00", idp.UserSecurity.LockedOutPct)
-	}
-	if idp.UserSecurity.WeakPasswordPct == nil || *idp.UserSecurity.WeakPasswordPct != 8.0 {
-		t.Fatalf("WeakPasswordPct = %v, want 8.00", idp.UserSecurity.WeakPasswordPct)
-	}
-	if idp.UserSecurity.PasswordPolicyNoncompliantPct == nil || *idp.UserSecurity.PasswordPolicyNoncompliantPct != 4.0 {
-		t.Fatalf("PasswordPolicyNoncompliantPct = %v, want 4.00", idp.UserSecurity.PasswordPolicyNoncompliantPct)
-	}
+	// MFACoveragePct is the larger of the live 2SV share and the report's
+	// passkey share. 1 of the 5 active users is enrolled, which gives 20%.
+	// 10 of the 100 report users have a passkey, which gives 10%. The report's
+	// 75 enrolled and 70 protected users are not used.
+	wantPercentage(t, "UserSecurity.MFACoveragePct", idp.UserSecurity.MFACoveragePct, 20)
+	wantPercentage(t, "UserSecurity.MFAPhishingResistantPct", idp.UserSecurity.MFAPhishingResistantPct, 10)
+	// inactive: 2 of 5 active users = 40%
+	wantPercentage(t, "UserSecurity.InactivePct", idp.UserSecurity.InactivePct, 40)
+	wantInt(t, "UserSecurity.UserCount", idp.UserSecurity.UserCount, 5)
+	wantInt(t, "UserSecurity.InactiveUserCount", idp.UserSecurity.InactiveUserCount, 2)
+	// locked: 3 of 100 = 3%
+	wantPercentage(t, "UserSecurity.LockedOutPct", idp.UserSecurity.LockedOutPct, 3)
+	wantPercentage(t, "UserSecurity.WeakPasswordPct", idp.UserSecurity.WeakPasswordPct, 8)
+	wantPercentage(t, "UserSecurity.PasswordPolicyNoncompliantPct", idp.UserSecurity.PasswordPolicyNoncompliantPct, 4)
 
 	if idp.AppSecurity != nil {
-		t.Fatalf("AppSecurity must be nil at trust (internal only), got %+v", idp.AppSecurity)
+		t.Fatalf("AppSecurity must be nil below internal, got %+v", idp.AppSecurity)
 	}
 	if idp.PrivilegedAccess == nil {
 		t.Fatal("PrivilegedAccess = nil, want admin posture")
 	}
-	if idp.PrivilegedAccess.PrivilegedUsersCount != 2 {
-		t.Fatalf("PrivilegedUsersCount = %d, want 2", idp.PrivilegedAccess.PrivilegedUsersCount)
+	wantInt(t, "PrivilegedAccess.PrivilegedUsersCount", idp.PrivilegedAccess.PrivilegedUsersCount, 2)
+	wantInt(t, "PrivilegedAccess.SuperAdminCount", idp.PrivilegedAccess.SuperAdminCount, 1)
+	if idp.PrivilegedAccess.StandingPrivilegedUsersCount != nil {
+		t.Errorf("PrivilegedAccess.StandingPrivilegedUsersCount = %d, want it left out for a tenant with admins", *idp.PrivilegedAccess.StandingPrivilegedUsersCount)
 	}
-	if idp.PrivilegedAccess.SuperAdminCount != 1 {
-		t.Fatalf("SuperAdminCount = %d, want 1", idp.PrivilegedAccess.SuperAdminCount)
-	}
-	if idp.PrivilegedAccess.StandingPrivilegedUsersCount == nil || *idp.PrivilegedAccess.StandingPrivilegedUsersCount != 2 {
-		t.Fatalf("StandingPrivilegedUsersCount = %v, want 2", idp.PrivilegedAccess.StandingPrivilegedUsersCount)
-	}
-	if idp.PrivilegedAccess.PrivilegedMFACoveragePct == nil || *idp.PrivilegedAccess.PrivilegedMFACoveragePct != 50.0 {
-		t.Fatalf("PrivilegedMFACoveragePct = %v, want 50.00 based on 2SV enrollment", idp.PrivilegedAccess.PrivilegedMFACoveragePct)
-	}
+	wantInt(t, "PrivilegedAccess.PrivilegedMFAUserCount", idp.PrivilegedAccess.PrivilegedMFAUserCount, 1)
+	wantPercentage(t, "PrivilegedAccess.PrivilegedMFACoveragePct", idp.PrivilegedAccess.PrivilegedMFACoveragePct, 50)
 	if idp.Lifecycle == nil {
 		t.Fatal("Lifecycle = nil, want suspended/archived coverage")
 	}
-	if idp.Lifecycle.SuspendedPct == nil || *idp.Lifecycle.SuspendedPct != 5.0 {
-		t.Fatalf("SuspendedPct = %v, want 5.00", idp.Lifecycle.SuspendedPct)
-	}
-	if idp.Lifecycle.ArchivedPct == nil || *idp.Lifecycle.ArchivedPct != 3.0 {
-		t.Fatalf("ArchivedPct = %v, want 3.00", idp.Lifecycle.ArchivedPct)
-	}
+	wantInt(t, "Lifecycle.AccountCount", idp.Lifecycle.AccountCount, 100)
+	wantPercentage(t, "Lifecycle.SuspendedPct", idp.Lifecycle.SuspendedPct, 5)
+	wantPercentage(t, "Lifecycle.ArchivedPct", idp.Lifecycle.ArchivedPct, 3)
 
 	data, err := json.Marshal(idp)
 	if err != nil {
@@ -1273,20 +1241,18 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 	}
 
 	if _, ok := decoded["app_security"]; ok {
-		t.Fatal("app_security must not appear in trust-level IDP posture (internal only)")
+		t.Fatal("app_security must not appear below the internal level")
 	}
 
 	if idp.Policy == nil {
 		t.Fatal("Policy = nil, want non-nil when enforcement coverage is known")
 	}
-	if idp.Policy.MFARequired {
-		t.Fatal("Policy.MFARequired = true, want false when live active-user enforcement is below 100%")
+	if idp.Policy.MFARequired == nil || *idp.Policy.MFARequired {
+		t.Fatalf("Policy.MFARequired = %s, want false when live active-user enforcement is below 100%%", showPtr(idp.Policy.MFARequired))
 	}
-	if idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 20.0 {
-		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 20.00 from live Directory enforcement", idp.Policy.MFARequiredCoveragePct)
-	}
-	if idp.Policy.LegacyAuthBlocked == nil || !*idp.Policy.LegacyAuthBlocked {
-		t.Fatalf("Policy.LegacyAuthBlocked = %v, want true", idp.Policy.LegacyAuthBlocked)
+	wantPercentage(t, "Policy.MFARequiredCoveragePct", idp.Policy.MFARequiredCoveragePct, 20)
+	if _, ok := decoded["policy"].(map[string]any)["legacy_auth_blocked"]; ok {
+		t.Fatal("policy.legacy_auth_blocked is emitted, want it left out: no API reports it for the tenant")
 	}
 	if idp.DeviceAccess == nil {
 		t.Fatal("DeviceAccess = nil, want managed device evidence")
@@ -1294,58 +1260,174 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 	if idp.DeviceAccess.ManagedDeviceRequired == nil || !*idp.DeviceAccess.ManagedDeviceRequired {
 		t.Fatalf("ManagedDeviceRequired = %v, want true", idp.DeviceAccess.ManagedDeviceRequired)
 	}
-	if idp.DeviceAccess.ManagedDeviceRequiredForAdmins != nil {
-		t.Fatalf("ManagedDeviceRequiredForAdmins = %v, want nil (not inferable from current APIs)", idp.DeviceAccess.ManagedDeviceRequiredForAdmins)
-	}
 }
 
 func TestToIDPPosture_PartialEnforcementKeepsCoverage(t *testing.T) {
 	posture := &OrgPosture{
 		CollectedAt: "2026-04-08T12:00:00Z",
-		Users:       UserMetrics{Total: 100},
+		OrgDomain:   strPtr("example.com"),
+		Users:       UserMetrics{Total: intPtr(100), Active: intPtr(100)},
 		Authentication: AuthMetrics{
-			TwoSVEnforcedPct:  80, // Not 100%
-			TwoSVProtectedPct: 70,
+			TwoSVEnforcedPct:  pctPtr(80), // Not 100%
+			TwoSVProtectedPct: pctPtr(70),
 		},
+		counts: postureCounts{enforced2SVUsers: intPtr(80)},
 	}
 
 	idp := posture.ToIDPPosture()
 	if idp.Policy == nil {
 		t.Fatal("Policy = nil, want non-nil when enforcement coverage is known")
 	}
-	if idp.Policy.MFARequired {
-		t.Fatal("Policy.MFARequired = true, want false when enforcement < 100%")
+	if idp.Policy.MFARequired == nil || *idp.Policy.MFARequired {
+		t.Fatalf("Policy.MFARequired = %s, want false when enforcement < 100%%", showPtr(idp.Policy.MFARequired))
 	}
-	if idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 80.0 {
-		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 80.00", idp.Policy.MFARequiredCoveragePct)
-	}
-	if idp.Policy.LegacyAuthBlocked == nil || !*idp.Policy.LegacyAuthBlocked {
-		t.Fatalf("Policy.LegacyAuthBlocked = %v, want true", idp.Policy.LegacyAuthBlocked)
-	}
+	wantPercentage(t, "Policy.MFARequiredCoveragePct", idp.Policy.MFARequiredCoveragePct, 80)
 }
 
 func TestToIDPPosture_UsesPasskeyCoverageForPasswordlessTenants(t *testing.T) {
 	posture := &OrgPosture{
 		CollectedAt: "2026-04-22T17:41:13Z",
-		Users:       UserMetrics{Total: 6},
+		OrgDomain:   strPtr("example.com"),
+		Users:       UserMetrics{Total: intPtr(6), Active: intPtr(6)},
 		Authentication: AuthMetrics{
-			TwoSVEnrolledPct:  0,
-			TwoSVEnforcedPct:  0,
-			TwoSVProtectedPct: 0,
-			PasskeyUsersPct:   100,
+			TwoSVEnrolledPct:  pctPtr(0),
+			TwoSVEnforcedPct:  pctPtr(0),
+			TwoSVProtectedPct: pctPtr(0),
+			PasskeyUsersPct:   pctPtr(100),
 		},
+		counts: postureCounts{enrolled2SVUsers: intPtr(0), passkeyUsers: intPtr(6), enforced2SVUsers: intPtr(0)},
 	}
 
 	idp := posture.ToIDPPosture()
 	if idp == nil {
 		t.Fatal("ToIDPPosture() = nil, want non-nil")
 	}
-	if idp.UserSecurity.MFACoveragePct != 100.0 {
-		t.Fatalf("MFACoveragePct = %.2f, want 100.00 from passkey-first coverage", idp.UserSecurity.MFACoveragePct)
+	wantPercentage(t, "UserSecurity.MFACoveragePct", idp.UserSecurity.MFACoveragePct, 100)
+	if idp.Policy == nil {
+		t.Fatal("Policy = nil, want the enforcement coverage")
 	}
-	if idp.Policy == nil || idp.Policy.MFARequiredCoveragePct == nil || *idp.Policy.MFARequiredCoveragePct != 0.0 {
-		t.Fatalf("Policy.MFARequiredCoveragePct = %v, want 0.00 when classic 2SV enforcement is not configured", idp.Policy.MFARequiredCoveragePct)
+	wantPercentage(t, "Policy.MFARequiredCoveragePct", idp.Policy.MFARequiredCoveragePct, 0)
+}
+
+// A user in a 2-step verification enrollment grace period is counted as
+// protected in the Accounts report, though the user has no second factor yet.
+func TestCollect_MFACoverageCountsUsersEnrolledIn2SV(t *testing.T) {
+	tests := []struct {
+		name      string
+		enforced  bool
+		report    googleworkspace.CustomerUsageReport
+		wantPct   float64
+		wantUsers int
+	}{
+		{
+			name:     "half the users in the enrollment grace period",
+			enforced: true,
+			report:   googleworkspace.CustomerUsageReport{NumUsers: 10, NumUsers2SVEnrolled: 5, NumUsers2SVEnforced: 10, NumUsers2SVProtected: 10},
+			wantPct:  50,
+		},
+		{
+			name:    "protected equals enrolled",
+			report:  googleworkspace.CustomerUsageReport{NumUsers: 10, NumUsers2SVEnrolled: 5, NumUsers2SVProtected: 5},
+			wantPct: 50,
+		},
+		{
+			name:    "more passkey users than 2SV users",
+			report:  googleworkspace.CustomerUsageReport{NumUsers: 10, NumUsers2SVEnrolled: 2, NumUsers2SVProtected: 2, NumUsersWithPasskeysEnrolled: 6},
+			wantPct: 60,
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+			var users []googleworkspace.User
+			for i := range 10 {
+				users = append(users, googleworkspace.User{
+					ID:              fmt.Sprintf("u%d", i),
+					PrimaryEmail:    fmt.Sprintf("user%d@example.com", i),
+					IsEnrolledIn2Sv: i < int(tt.report.NumUsers2SVEnrolled),
+					IsEnforcedIn2Sv: tt.enforced,
+					LastLoginTime:   now,
+				})
+			}
+			client := &mockClient{
+				customer:    googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+				usageReport: tt.report,
+				users:       users,
+			}
+			c := NewWithClient(Config{AdminEmail: "admin@example.com", Now: func() time.Time { return now }}, client)
+			posture, err := c.Collect(context.Background(), componentsdk.LevelAudit)
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+			idp := posture.ToIDPPosture()
+			if idp == nil || idp.UserSecurity == nil {
+				t.Fatalf("ToIDPPosture() = %+v, want user security", idp)
+			}
+			wantPercentage(t, "UserSecurity.MFACoveragePct", idp.UserSecurity.MFACoveragePct, tt.wantPct)
+		})
+	}
+}
+
+// The 2-step verification share comes from the live Directory scan, so the
+// report's enrolled count is not needed.
+func TestCollect_MFACoverageWithoutTheReportsEnrolledCount(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	client := &mockClient{
+		customer: googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+		usageReport: googleworkspace.CustomerUsageReport{
+			NumUsers:             10,
+			NumUsers2SVProtected: 7,
+			Missing:              []string{"accounts:num_users_2sv_enrolled"},
+		},
+		users: []googleworkspace.User{{PrimaryEmail: "user@example.com", IsEnrolledIn2Sv: true, LastLoginTime: now}},
+	}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Now: func() time.Time { return now }}, client)
+
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	idp := posture.ToIDPPosture()
+	if idp == nil || idp.UserSecurity == nil {
+		t.Fatalf("ToIDPPosture() = %+v, want user security", idp)
+	}
+	wantPercentage(t, "UserSecurity.MFACoveragePct", idp.UserSecurity.MFACoveragePct, 100)
+}
+
+// Suspended and archived users cannot sign in. The usage report counts them
+// in its total, so a suspended user who never enrolled in 2-step
+// verification would lower the share there.
+func TestCollect_MFACoverageLeavesOutSuspendedAndArchivedUsers(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	var users []googleworkspace.User
+	for i := range 10 {
+		users = append(users, googleworkspace.User{
+			ID:              fmt.Sprintf("u%d", i),
+			PrimaryEmail:    fmt.Sprintf("user%d@example.com", i),
+			IsEnrolledIn2Sv: i < 7,
+			Suspended:       i == 7 || i == 8,
+			Archived:        i == 9,
+			LastLoginTime:   now,
+		})
+	}
+	client := &mockClient{
+		customer: googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+		usageReport: googleworkspace.CustomerUsageReport{
+			NumUsers: 10, NumSuspendedUsers: 2, NumArchivedUsers: 1, NumUsers2SVEnrolled: 7, NumUsers2SVProtected: 7,
+		},
+		users: users,
+	}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Now: func() time.Time { return now }}, client)
+
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	idp := posture.ToIDPPosture()
+	if idp == nil || idp.UserSecurity == nil {
+		t.Fatalf("ToIDPPosture() = %+v, want user security", idp)
+	}
+	wantPercentage(t, "UserSecurity.MFACoveragePct", idp.UserSecurity.MFACoveragePct, 100)
 }
 
 func TestCollect_UsesLiveDirectoryEnforcementForTenantCoverage(t *testing.T) {
@@ -1383,20 +1465,16 @@ func TestCollect_UsesLiveDirectoryEnforcementForTenantCoverage(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if posture.Authentication.TwoSVEnforcedPct != 100.0 {
-		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 100.00 from live Directory enforcement", posture.Authentication.TwoSVEnforcedPct)
-	}
+	wantPct(t, "Authentication.TwoSVEnforcedPct", posture.Authentication.TwoSVEnforcedPct, 100.0)
 
 	idp := posture.ToIDPPosture()
-	if idp == nil || idp.Policy == nil || idp.Policy.MFARequiredCoveragePct == nil {
+	if idp == nil || idp.Policy == nil {
 		t.Fatal("ToIDPPosture() should include policy enforcement coverage")
 	}
-	if !idp.Policy.MFARequired {
-		t.Fatal("Policy.MFARequired = false, want true when live active-user enforcement is 100%")
+	if idp.Policy.MFARequired == nil || !*idp.Policy.MFARequired {
+		t.Fatalf("Policy.MFARequired = %s, want true when live active-user enforcement is 100%%", showPtr(idp.Policy.MFARequired))
 	}
-	if *idp.Policy.MFARequiredCoveragePct != 100.0 {
-		t.Fatalf("Policy.MFARequiredCoveragePct = %.2f, want 100.00", *idp.Policy.MFARequiredCoveragePct)
-	}
+	wantPercentage(t, "Policy.MFARequiredCoveragePct", idp.Policy.MFARequiredCoveragePct, 100)
 	if posture.Diagnostics == nil || len(posture.Diagnostics.Warnings) == 0 {
 		t.Fatal("Diagnostics = nil, want live-vs-report mismatch warning")
 	}
@@ -1441,12 +1519,8 @@ func TestCollect_UsesLiveDirectoryEnrollmentForTenantCoverage(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if posture.Authentication.TwoSVEnrolledPct != 100.0 {
-		t.Fatalf("Authentication.TwoSVEnrolledPct = %.2f, want 100.00 from live Directory enrollment", posture.Authentication.TwoSVEnrolledPct)
-	}
-	if posture.Authentication.TwoSVEnforcedPct != 100.0 {
-		t.Fatalf("Authentication.TwoSVEnforcedPct = %.2f, want 100.00 from live Directory enforcement", posture.Authentication.TwoSVEnforcedPct)
-	}
+	wantPct(t, "Authentication.TwoSVEnrolledPct", posture.Authentication.TwoSVEnrolledPct, 100.0)
+	wantPct(t, "Authentication.TwoSVEnforcedPct", posture.Authentication.TwoSVEnforcedPct, 100.0)
 	if len(posture.Users.Inventory) != 7 {
 		t.Fatalf("len(Users.Inventory) = %d, want 7", len(posture.Users.Inventory))
 	}
@@ -1497,12 +1571,8 @@ func TestCollect_UsesLiveDirectoryActivityForTenantCoverage(t *testing.T) {
 	if posture.Activity == nil {
 		t.Fatal("Activity = nil, want activity metrics at audit")
 	}
-	if posture.Activity.Active7dPct != 100.0 {
-		t.Fatalf("Activity.Active7dPct = %.2f, want 100.00 from live Directory last-login times", posture.Activity.Active7dPct)
-	}
-	if posture.Activity.Active30dPct != 100.0 {
-		t.Fatalf("Activity.Active30dPct = %.2f, want 100.00 from live Directory last-login times", posture.Activity.Active30dPct)
-	}
+	wantPct(t, "Activity.Active7dPct", posture.Activity.Active7dPct, 100.0)
+	wantPct(t, "Activity.Active30dPct", posture.Activity.Active30dPct, 100.0)
 	for _, row := range posture.Users.Inventory {
 		if !row.Active7d || !row.Active30d {
 			t.Fatalf("inventory row %s disagrees with the activity rollup: %+v", row.PrimaryEmail, row)
@@ -1518,36 +1588,33 @@ func TestCollect_UsesLiveDirectoryActivityForTenantCoverage(t *testing.T) {
 
 func TestToIDPPosture_UsesUniquePrivilegedCount(t *testing.T) {
 	posture := &OrgPosture{
-		CollectedAt: "2026-04-08T12:00:00Z",
-		Users:       UserMetrics{Total: 10},
+		CollectedAt:      "2026-04-08T12:00:00Z",
+		CollectedAtLevel: string(componentsdk.LevelAudit),
+		OrgDomain:        strPtr("example.com"),
+		Users:            UserMetrics{Total: intPtr(10)},
 		Admins: AdminMetrics{
-			PrivilegedUsersCount:          4,
-			SuperAdminCount:               3,
-			DelegatedAdminCount:           2,
-			PrivilegedUsers2SVEnrolledPct: 50.0,
-			PrivilegedUsers2SVEnforcedPct: 75.0,
+			PrivilegedUsersCount:          intPtr(4),
+			SuperAdminCount:               intPtr(3),
+			DelegatedAdminCount:           intPtr(2),
+			PrivilegedUsers2SVEnrolledPct: pctPtr(50.0),
+			PrivilegedUsers2SVEnforcedPct: pctPtr(75.0),
 		},
+		counts: postureCounts{privileged2SVEnrolled: intPtr(2)},
 	}
 
 	idp := posture.ToIDPPosture()
 	if idp == nil || idp.PrivilegedAccess == nil {
 		t.Fatal("ToIDPPosture() should include privileged access when user data exists")
 	}
-	if idp.PrivilegedAccess.PrivilegedUsersCount != 4 {
-		t.Fatalf("PrivilegedUsersCount = %d, want 4 unique privileged users", idp.PrivilegedAccess.PrivilegedUsersCount)
-	}
-	if idp.PrivilegedAccess.PrivilegedMFACoveragePct == nil || *idp.PrivilegedAccess.PrivilegedMFACoveragePct != 50.0 {
-		t.Fatalf("PrivilegedMFACoveragePct = %v, want 50.0 from enrolled privileged users", idp.PrivilegedAccess.PrivilegedMFACoveragePct)
-	}
-	if idp.PrivilegedAccess.StandingPrivilegedUsersCount == nil || *idp.PrivilegedAccess.StandingPrivilegedUsersCount != 4 {
-		t.Fatalf("StandingPrivilegedUsersCount = %v, want 4", idp.PrivilegedAccess.StandingPrivilegedUsersCount)
-	}
+	wantInt(t, "PrivilegedAccess.PrivilegedUsersCount", idp.PrivilegedAccess.PrivilegedUsersCount, 4)
+	wantPercentage(t, "PrivilegedAccess.PrivilegedMFACoveragePct", idp.PrivilegedAccess.PrivilegedMFACoveragePct, 50)
 }
 
 func TestToIDPPosture_OmitsDeviceAccessWithoutPositiveEvidence(t *testing.T) {
 	posture := &OrgPosture{
 		CollectedAt: "2026-04-08T12:00:00Z",
-		Users:       UserMetrics{Total: 10},
+		OrgDomain:   strPtr("example.com"),
+		Users:       UserMetrics{Total: intPtr(10)},
 		DeviceAccess: &DeviceAccessMetrics{
 			LookbackDays:                      DefaultContextAwareAccessLookbackDays,
 			ContextAwareAccessDeniedEvents:    3,
@@ -1600,10 +1667,27 @@ func TestCollect_WarnsWhenUsageReportEmpty(t *testing.T) {
 		t.Fatal("expected at least one non-empty warning")
 	}
 
-	// Normalized artifact must be nil when report has no user data,
-	// to avoid emitting zero percentages that look like real posture.
-	if idp := posture.ToIDPPosture(); idp != nil {
-		t.Fatal("ToIDPPosture() should return nil when usage report is empty")
+	// A report with no user data gives no percentages: zero percentages
+	// would look like real posture.
+	if posture.Users.LockedPct != nil || posture.Authentication.TwoSVProtectedPct != nil {
+		t.Fatalf("report percentages over no users = %v, %v; want them left out", posture.Users.LockedPct, posture.Authentication.TwoSVProtectedPct)
+	}
+	// With no active users either, the normalized percentages are null.
+	idp := posture.ToIDPPosture()
+	if idp == nil || idp.UserSecurity == nil {
+		t.Fatal("ToIDPPosture() has no user security, want users_present false")
+	}
+	us := idp.UserSecurity
+	if us.UsersPresent == nil || *us.UsersPresent {
+		t.Fatalf("UsersPresent = %s, want false", showPtr(us.UsersPresent))
+	}
+	for name, pct := range map[string]Percentage{
+		"MFACoveragePct": us.MFACoveragePct, "InactivePct": us.InactivePct, "LockedOutPct": us.LockedOutPct,
+		"WeakPasswordPct": us.WeakPasswordPct, "PasswordPolicyNoncompliantPct": us.PasswordPolicyNoncompliantPct,
+	} {
+		if !pct.Read || pct.Value != nil {
+			t.Errorf("UserSecurity.%s = %+v, want null", name, pct)
+		}
 	}
 }
 
@@ -1738,6 +1822,49 @@ func TestCollect_AccessContextManagerEnrichment(t *testing.T) {
 	}
 }
 
+// A basic access level joins its conditions with AND, the default, or OR,
+// where a request has to meet only one of them. A negated (Don't meet)
+// condition is met by a request that fails any of its settings.
+func TestCollect_AccessLevelRequirementsComeFromConditionsEveryRequestMeets(t *testing.T) {
+	const network = `{"ipSubnetworks":["203.0.113.0/24"]}`
+	const device = `{"devicePolicy":{"allowedDeviceManagementLevels":["COMPLETE"],"requireCorpOwned":true,"requireScreenlock":true}}`
+	tests := []struct {
+		name             string
+		basic            string
+		wantManaged      int
+		wantCorpOwned    bool
+		wantScreenlock   bool
+		wantDevicePolicy bool
+	}{
+		{name: "AND", basic: `{"combiningFunction":"AND","conditions":[` + network + `,` + device + `]}`, wantManaged: 1, wantCorpOwned: true, wantScreenlock: true, wantDevicePolicy: true},
+		{name: "OR", basic: `{"combiningFunction":"OR","conditions":[` + network + `,` + device + `]}`, wantDevicePolicy: true},
+		{name: "OR with one condition", basic: `{"combiningFunction":"OR","conditions":[` + device + `]}`, wantManaged: 1, wantCorpOwned: true, wantScreenlock: true, wantDevicePolicy: true},
+		{name: "met", basic: `{"conditions":[{"devicePolicy":{"requireScreenlock":true}}]}`, wantScreenlock: true, wantDevicePolicy: true},
+		{name: "negated", basic: `{"conditions":[{"negate":true,"devicePolicy":{"requireScreenlock":true}}]}`, wantDevicePolicy: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tenant := cleanTenant()
+			tenant.accessLevels = `{"accessLevels":[{"name":"accessPolicies/111/accessLevels/level","title":"Level","basic":` + tt.basic + `}]}`
+			posture := runKitTenant(t, tenant)
+			if posture.DeviceAccess == nil || posture.DeviceAccess.AccessContextManager == nil || len(posture.DeviceAccess.AccessContextManager.Levels) != 1 {
+				t.Fatalf("device_access = %+v, want one access level", posture.DeviceAccess)
+			}
+			acm := posture.DeviceAccess.AccessContextManager
+			level := acm.Levels[0]
+			if acm.BasicManagedDeviceAccessLevelsCount != tt.wantManaged {
+				t.Errorf("basic_managed_device_access_levels_count = %d, want %d", acm.BasicManagedDeviceAccessLevelsCount, tt.wantManaged)
+			}
+			if level.RequiresCorpOwned != tt.wantCorpOwned || level.RequiresScreenlock != tt.wantScreenlock || level.HasDevicePolicy != tt.wantDevicePolicy {
+				t.Errorf("level = %+v, want requires_corp_owned %v, requires_screenlock %v, has_device_policy %v", level, tt.wantCorpOwned, tt.wantScreenlock, tt.wantDevicePolicy)
+			}
+			if !tt.wantCorpOwned && len(level.AllowedDeviceManagementLevels) != 0 {
+				t.Errorf("allowed_device_management_levels = %v, want none from a condition a request need not meet", level.AllowedDeviceManagementLevels)
+			}
+		})
+	}
+}
+
 func TestCollect_ResolvesAccessPolicyFromOrganizationID(t *testing.T) {
 	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
 
@@ -1829,45 +1956,56 @@ func TestCollect_AdminDenominatorExcludesSuspendedArchived(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if posture.Admins.SuperAdminCount != 1 {
-		t.Fatalf("SuperAdminCount = %d, want 1 (suspended excluded)", posture.Admins.SuperAdminCount)
-	}
-	if posture.Admins.DelegatedAdminCount != 0 {
-		t.Fatalf("DelegatedAdminCount = %d, want 0 (archived excluded)", posture.Admins.DelegatedAdminCount)
-	}
-	if posture.Admins.PrivilegedUsersCount != 1 {
-		t.Fatalf("PrivilegedUsersCount = %d, want 1 (only active admin remains)", posture.Admins.PrivilegedUsersCount)
-	}
-	if posture.Admins.PrivilegedUsers2SVEnrolledPct != 100.0 {
-		t.Fatalf("PrivilegedUsers2SVEnrolledPct = %.2f, want 100.00", posture.Admins.PrivilegedUsers2SVEnrolledPct)
-	}
-	if posture.Admins.PrivilegedUsers2SVEnforcedPct != 100.0 {
-		t.Fatalf("PrivilegedUsers2SVEnforcedPct = %.2f, want 100.00", posture.Admins.PrivilegedUsers2SVEnforcedPct)
+	wantInt(t, "Admins.SuperAdminCount", posture.Admins.SuperAdminCount, 1)
+	wantInt(t, "Admins.DelegatedAdminCount", posture.Admins.DelegatedAdminCount, 0)
+	wantInt(t, "Admins.PrivilegedUsersCount", posture.Admins.PrivilegedUsersCount, 1)
+	wantPct(t, "Admins.PrivilegedUsers2SVEnrolledPct", posture.Admins.PrivilegedUsers2SVEnrolledPct, 100.0)
+	wantPct(t, "Admins.PrivilegedUsers2SVEnforcedPct", posture.Admins.PrivilegedUsers2SVEnforcedPct, 100.0)
+}
+
+func TestCollect_SignInFailureFailsTheRun(t *testing.T) {
+	rejected := errors.New("token endpoint rejected the assertion")
+	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{signInErr: rejected})
+
+	if _, err := c.Collect(context.Background(), componentsdk.LevelTrust); !errors.Is(err, rejected) {
+		t.Fatalf("Collect() error = %v, want the sign-in failure", err)
 	}
 }
 
-func TestCollect_ReturnsCustomerErrors(t *testing.T) {
-	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{
-		customerErr: errors.New("boom"),
-	})
-
-	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err == nil {
-		t.Fatal("Collect() error = nil, want error")
+// Only a Super Admin can read the tenant record. Without it the run goes on
+// under the customer key, and leaves out only what needs the record.
+func TestCollect_CustomerErrorLeavesOutOnlyTheTenantRecord(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	rec := &componentsdk.Recorder{}
+	client := &mockClient{
+		customerErr: &googleapi.Error{Code: 403, Errors: []googleapi.ErrorItem{{Reason: "forbidden"}}},
+		usageReport: googleworkspace.CustomerUsageReport{NumUsers: 2, NumUsers2SVProtected: 1},
+		users:       []googleworkspace.User{{PrimaryEmail: "helpdesk@example.com", IsDelegatedAdmin: true, LastLoginTime: now}},
 	}
-}
+	c := NewWithClient(Config{AdminEmail: "helpdesk@example.com", Recorder: rec, Now: func() time.Time { return now }}, client)
 
-func TestCollect_CustomerRoleDeniedNamesSuperAdmin(t *testing.T) {
-	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{
-		customerErr: &googleapi.Error{Code: 403, Errors: []googleapi.ErrorItem{{Reason: "INSUFFICIENT_PERMISSIONS"}}},
-	})
-
-	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err == nil {
-		t.Fatal("Collect() error = nil, want error")
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect() error = %v, want the run to go on without the tenant record", err)
 	}
-	if !strings.Contains(err.Error(), "admin_email must be a Super Admin") {
-		t.Errorf("Collect() error = %q, want Super Admin guidance", err)
+	if posture.CustomerID != nil || posture.OrgDomain != nil {
+		t.Fatalf("customer_id = %v, org_domain = %v; want both left out", posture.CustomerID, posture.OrgDomain)
+	}
+	for _, pointer := range []string{"/customer_id", "/org_domain"} {
+		if !hasGap(rec, pointer) {
+			t.Errorf("no gap at %s; gaps = %+v", pointer, rec.Gaps())
+		}
+	}
+	if client.lastCustomerID != googleworkspace.DefaultCustomerKey {
+		t.Fatalf("usage report customer = %q, want the customer key", client.lastCustomerID)
+	}
+	wantPct(t, "Authentication.TwoSVProtectedPct", posture.Authentication.TwoSVProtectedPct, 50)
+	wantInt(t, "Admins.DelegatedAdminCount", posture.Admins.DelegatedAdminCount, 1)
+	if !hasPermissionError(posture, "surface customer: impersonation user lacks required admin role: Super Admin") {
+		t.Fatalf("permission_errors = %v, want the Super Admin guidance", permissionErrorsOf(posture))
+	}
+	if idp := posture.ToIDPPosture(); idp != nil {
+		t.Fatalf("ToIDPPosture() = %+v, want nil: the normalized shape requires the primary domain", idp)
 	}
 }
 
@@ -1876,30 +2014,38 @@ func TestCollect_CustomerScopeDeniedNamesScope(t *testing.T) {
 		customerErr: &googleapi.Error{Code: 403, Errors: []googleapi.ErrorItem{{Reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}}},
 	})
 
-	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err == nil {
-		t.Fatal("Collect() error = nil, want error")
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect() error = %v, want the run to go on", err)
 	}
-	if !strings.Contains(err.Error(), "admin.directory.customer.readonly") {
-		t.Errorf("Collect() error = %q, want scope guidance", err)
+	if !hasPermissionError(posture, "admin.directory.customer.readonly") {
+		t.Errorf("permission_errors = %v, want scope guidance", permissionErrorsOf(posture))
 	}
 }
 
 func TestCollect_DegradesOnUsageReportError(t *testing.T) {
-	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{
+	rec := &componentsdk.Recorder{}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Recorder: rec}, &mockClient{
 		customer: googleworkspace.Customer{
 			ID:            "C123",
 			PrimaryDomain: "example.com",
 		},
 		usageReportErr: errors.New("reports api down"),
+		users:          []googleworkspace.User{{PrimaryEmail: "admin@example.com", IsAdmin: true, IsEnrolledIn2Sv: true}},
 	})
 
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("Collect() error = %v, want nil (usage-report failure should degrade)", err)
 	}
-	if posture.Users.Total != 0 || posture.Authentication.TwoSVEnrolledPct != 0 {
-		t.Fatalf("report-derived metrics should be zeroed on degradation; got users=%+v auth=%+v", posture.Users, posture.Authentication)
+	if posture.Users.Total != nil || posture.Authentication.TwoSVProtectedPct != nil || posture.UsageReportDate != nil {
+		t.Fatalf("report-derived metrics should be left out, not zeroed; got users=%+v auth=%+v", posture.Users, posture.Authentication)
+	}
+	wantPct(t, "Authentication.TwoSVEnrolledPct", posture.Authentication.TwoSVEnrolledPct, 100)
+	for _, pointer := range []string{"/usage_report_date", "/users/total", "/authentication/2sv_protected_pct"} {
+		if !hasGap(rec, pointer) {
+			t.Errorf("no gap at %s; gaps = %+v", pointer, rec.Gaps())
+		}
 	}
 	if !hasWarning(posture, "usage_report") {
 		t.Fatalf("expected usage_report degradation warning; warnings = %v", warningsOf(posture))
@@ -1907,20 +2053,30 @@ func TestCollect_DegradesOnUsageReportError(t *testing.T) {
 }
 
 func TestCollect_DegradesOnListUsersError(t *testing.T) {
-	c := NewWithClient(Config{AdminEmail: "admin@example.com"}, &mockClient{
+	rec := &componentsdk.Recorder{}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Recorder: rec}, &mockClient{
 		customer: googleworkspace.Customer{
 			ID:            "C123",
 			PrimaryDomain: "example.com",
 		},
-		usersErr: errors.New("directory api down"),
+		usageReport: googleworkspace.CustomerUsageReport{NumUsers: 10, NumUsers2SVEnrolled: 9},
+		usersErr:    errors.New("directory api down"),
 	})
 
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("Collect() error = %v, want nil (user-scan failure should degrade)", err)
 	}
-	if posture.Admins.PrivilegedUsersCount != 0 {
-		t.Fatalf("admin counts should be zeroed on degradation; got %d", posture.Admins.PrivilegedUsersCount)
+	if posture.Admins.PrivilegedUsersCount != nil || posture.Users.InactivePct != nil {
+		t.Fatalf("user-scan metrics should be left out, not zeroed; got admins=%+v users=%+v", posture.Admins, posture.Users)
+	}
+	if posture.Authentication.TwoSVEnrolledPct != nil {
+		t.Fatalf("2SV enrollment = %v, want it left out rather than taken from the lagged report", *posture.Authentication.TwoSVEnrolledPct)
+	}
+	for _, pointer := range []string{"/admins/privileged_users_count", "/users/inactive_pct", "/authentication/2sv_enrolled_pct"} {
+		if !hasGap(rec, pointer) {
+			t.Errorf("no gap at %s; gaps = %+v", pointer, rec.Gaps())
+		}
 	}
 	if !hasWarning(posture, "surface users: scan failed") {
 		t.Fatalf("expected users degradation warning; warnings = %v", warningsOf(posture))
@@ -1983,12 +2139,8 @@ func TestCollect_RetriesOlderDateWhenReportNotYetAvailable(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if posture.UsageReportDate != "2026-04-06" {
-		t.Fatalf("UsageReportDate = %q, want 2026-04-06 (should have fallen back)", posture.UsageReportDate)
-	}
-	if posture.Users.Total != 50 {
-		t.Fatalf("Users.Total = %d, want 50", posture.Users.Total)
-	}
+	wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-06")
+	wantInt(t, "Users.Total", posture.Users.Total, 50)
 	if client.lastReportDate != "2026-04-06" {
 		t.Fatalf("lastReportDate = %q, want 2026-04-06", client.lastReportDate)
 	}
@@ -2024,46 +2176,144 @@ func TestCollect_DegradesWhenAllReportDatesUnavailable(t *testing.T) {
 	}
 }
 
+// The no-data message in the Reports API reference starts "Sorry, data for
+// date". The kit fixtures start it "Data is not available".
 func TestCollect_RetriesWhenResponseHasDataNotAvailableWarning(t *testing.T) {
-	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	for _, message := range []string{
+		`Sorry, data for date 2026-04-07 for application "accounts" is not available.`,
+		"Data is not available for date 2026-04-07 for application accounts.",
+	} {
+		t.Run(message, func(t *testing.T) {
+			now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
 
-	client := &mockClient{
-		customer: googleworkspace.Customer{
-			ID:            "C123",
-			PrimaryDomain: "example.com",
-		},
-		usageReportByDate: map[string]mockReportResult{
-			"2026-04-07": {report: googleworkspace.CustomerUsageReport{
-				Date: "2026-04-07",
-				Warnings: []googleworkspace.ReportWarning{
-					{Code: "200", Message: "Data is not available for date 2026-04-07 for application accounts."},
+			client := &mockClient{
+				customer: googleworkspace.Customer{
+					ID:            "C123",
+					PrimaryDomain: "example.com",
 				},
-			}},
-			"2026-04-06": {report: googleworkspace.CustomerUsageReport{
-				Date:     "2026-04-06",
-				NumUsers: 25,
-			}},
-		},
-		users: []googleworkspace.User{
-			{PrimaryEmail: "user@example.com", LastLoginTime: now},
-		},
+				usageReportByDate: map[string]mockReportResult{
+					"2026-04-07": {report: googleworkspace.CustomerUsageReport{
+						Date:     "2026-04-07",
+						Warnings: []googleworkspace.ReportWarning{{Code: "200", Message: message}},
+						Missing:  reportParameters(),
+					}},
+					"2026-04-06": {report: googleworkspace.CustomerUsageReport{
+						Date:     "2026-04-06",
+						NumUsers: 25,
+					}},
+				},
+				users: []googleworkspace.User{
+					{PrimaryEmail: "user@example.com", LastLoginTime: now},
+				},
+			}
+
+			c := NewWithClient(Config{
+				AdminEmail: "admin@example.com",
+				Now:        func() time.Time { return now },
+			}, client)
+
+			posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+
+			wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-06")
+			wantInt(t, "Users.Total", posture.Users.Total, 25)
+		})
+	}
+}
+
+// The partial-data message in the Reports API reference says the data "is not
+// available right now". Messages that start "Partial data" are surfaced too.
+func TestCollect_SurfacesPartialDataWarning(t *testing.T) {
+	for _, message := range []string{
+		`Data for date 2026-04-07 for application "accounts" is not available right now, please try again after a few hours.`,
+		"Partial data is available for date 2026-04-07 for application accounts.",
+	} {
+		t.Run(message, func(t *testing.T) {
+			now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+			client := &mockClient{
+				customer: googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+				usageReport: googleworkspace.CustomerUsageReport{
+					Date:     "2026-04-07",
+					NumUsers: 25,
+					Warnings: []googleworkspace.ReportWarning{{Code: "200", Message: message}},
+				},
+				users: []googleworkspace.User{{PrimaryEmail: "user@example.com", LastLoginTime: now}},
+			}
+			c := NewWithClient(Config{AdminEmail: "admin@example.com", Now: func() time.Time { return now }}, client)
+
+			posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+			wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-07")
+			wantInt(t, "Users.Total", posture.Users.Total, 25)
+			if !hasWarning(posture, "partial-data warning") {
+				t.Fatalf("warnings = %v, want the partial-data warning surfaced", warningsOf(posture))
+			}
+		})
+	}
+}
+
+// reportParameters lists every parameter the client asks the usage report
+// for. A report with no data leaves out all of them.
+func reportParameters() []string {
+	return strings.Split(reportParameterList, ",")
+}
+
+func kitTenantWithNewestReport(body string) kitTenant {
+	tenant := cleanTenant()
+	tenant.reports[0] = kitReport{date: "2026-04-07", body: body}
+	return tenant
+}
+
+func TestCollect_UsageReportWarningsOverTheReportsAPI(t *testing.T) {
+	warning := func(message string) string {
+		return `{"kind":"admin#reports#usageReports","warnings":[{"code":"200","message":"` + message + `"}]}`
+	}
+	partial := func(message string) string {
+		return strings.Replace(usageReport(map[string]int{
+			"accounts:num_users": 8, "accounts:num_suspended_users": 1, "accounts:num_archived_users": 1,
+			"accounts:num_users_2sv_protected": 4, "accounts:num_users_with_passkeys_enrolled": 1,
+			"accounts:num_security_keys": 2, "accounts:num_authorized_apps": 5,
+		}), `{"kind":"admin#reports#usageReports",`,
+			`{"kind":"admin#reports#usageReports","warnings":[{"code":"200","message":"`+message+`"}],`, 1)
 	}
 
-	c := NewWithClient(Config{
-		AdminEmail: "admin@example.com",
-		Now:        func() time.Time { return now },
-	}, client)
-
-	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err != nil {
-		t.Fatalf("Collect() error = %v", err)
+	for _, message := range []string{
+		`Sorry, data for date 2026-04-07 for application \"accounts\" is not available.`,
+		"Data is not available for date 2026-04-07 for application accounts.",
+	} {
+		t.Run("no data: "+message, func(t *testing.T) {
+			posture := runKitTenant(t, kitTenantWithNewestReport(warning(message)))
+			wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-06")
+			wantInt(t, "Authentication.SecurityKeysTotal", posture.Authentication.SecurityKeysTotal, 2)
+			wantPct(t, "Authentication.TwoSVProtectedPct", posture.Authentication.TwoSVProtectedPct, 50)
+			wantPct(t, "Authentication.PasskeyUsersPct", posture.Authentication.PasskeyUsersPct, 12.5)
+			if posture.Apps == nil {
+				t.Fatal("Apps is nil, want the authorized app count")
+			}
+			wantInt(t, "Apps.AuthorizedAppsCount", posture.Apps.AuthorizedAppsCount, 5)
+		})
 	}
 
-	if posture.UsageReportDate != "2026-04-06" {
-		t.Fatalf("UsageReportDate = %q, want 2026-04-06 (should skip date with warning)", posture.UsageReportDate)
-	}
-	if posture.Users.Total != 25 {
-		t.Fatalf("Users.Total = %d, want 25", posture.Users.Total)
+	for _, message := range []string{
+		`Data for date 2026-04-07 for application \"accounts\" is not available right now, please try again after a few hours.`,
+		"Partial data is available for date 2026-04-07.",
+	} {
+		t.Run("partial data: "+message, func(t *testing.T) {
+			posture := runKitTenant(t, kitTenantWithNewestReport(partial(message)))
+			found := false
+			if posture.Diagnostics != nil {
+				for _, w := range posture.Diagnostics.Warnings {
+					found = found || strings.Contains(w, "partial-data warning")
+				}
+			}
+			if !found {
+				t.Fatalf("diagnostics = %+v, want the partial-data warning", posture.Diagnostics)
+			}
+		})
 	}
 }
 
@@ -2076,11 +2326,9 @@ func TestDiagnosticsReturnsNilWithoutWarnings(t *testing.T) {
 }
 
 func TestPercentFloatRoundsToTwoDecimals(t *testing.T) {
-	if got := percentFloat(2, 3); got != 66.67 {
-		t.Fatalf("percentFloat(2, 3) = %.2f, want 66.67", got)
-	}
-	if got := percentFloat(0, 0); got != 0 {
-		t.Fatalf("percentFloat(0, 0) = %.2f, want 0", got)
+	wantPct(t, "percentFloat(2, 3)", percentFloat(2, 3), 66.67)
+	if got := percentFloat(0, 0); got != nil {
+		t.Fatalf("percentFloat(0, 0) = %v, want nil over no population", *got)
 	}
 }
 
@@ -2193,5 +2441,82 @@ func TestCollect_PasswordPolicyFailureLeavesEverySurfaceIntact(t *testing.T) {
 	}
 	if string(wantJSON) != string(gotJSON) {
 		t.Fatalf("a password policy failure changed another surface:\nhealthy  = %s\ndegraded = %s", wantJSON, gotJSON)
+	}
+}
+
+func wantInt(t *testing.T, name string, got *int, want int) {
+	t.Helper()
+	if got == nil || *got != want {
+		t.Fatalf("%s = %s, want %d", name, showPtr(got), want)
+	}
+}
+
+func wantPercentage(t *testing.T, name string, got Percentage, want float64) {
+	t.Helper()
+	if !got.Read || got.Value == nil || *got.Value != want {
+		t.Fatalf("%s = %s (read %t), want %v", name, showPtr(got.Value), got.Read, want)
+	}
+}
+
+func wantPct(t *testing.T, name string, got *float64, want float64) {
+	t.Helper()
+	if got == nil || *got != want {
+		t.Fatalf("%s = %s, want %.2f", name, showPtr(got), want)
+	}
+}
+
+func wantStr(t *testing.T, name string, got *string, want string) {
+	t.Helper()
+	if got == nil || *got != want {
+		t.Fatalf("%s = %s, want %q", name, showPtr(got), want)
+	}
+}
+
+func showPtr[T any](p *T) string {
+	if p == nil {
+		return "null"
+	}
+	return fmt.Sprint(*p)
+}
+
+func pctPtr(v float64) *float64 { return &v }
+
+func strPtr(v string) *string { return &v }
+
+func hasGap(rec *componentsdk.Recorder, pointer string) bool {
+	for _, g := range rec.Gaps() {
+		if g.Pointer == pointer {
+			return true
+		}
+	}
+	return false
+}
+
+// A parameter the usage report leaves out is not a zero.
+func TestCollect_LeavesOutAUsageReportParameterTheReportOmits(t *testing.T) {
+	rec := &componentsdk.Recorder{}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Recorder: rec, Now: func() time.Time { return time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC) }}, &mockClient{
+		customer: googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+		usageReport: googleworkspace.CustomerUsageReport{
+			NumUsers:             10,
+			NumUsers2SVProtected: 7,
+			Missing:              []string{"accounts:num_locked_users"},
+		},
+		sessionPolicies:       []googleworkspace.SessionPolicy{{WebSessionSeconds: 43200}},
+		lessSecureAppPolicies: []googleworkspace.LessSecureAppsPolicy{{}},
+		passwordPolicies:      []googleworkspace.PasswordPolicy{{MinimumLength: 12, AllowedStrength: "STRONG"}},
+	})
+
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if posture.Users.LockedPct != nil {
+		t.Fatalf("Users.LockedPct = %v, want it left out", *posture.Users.LockedPct)
+	}
+	wantPct(t, "Authentication.TwoSVProtectedPct", posture.Authentication.TwoSVProtectedPct, 70)
+	gaps := rec.Gaps()
+	if len(gaps) != 1 || gaps[0].Pointer != "/users/locked_pct" || gaps[0].Code != componentsdk.CodeInvalidResponse {
+		t.Fatalf("gaps = %+v, want one invalid_response gap at /users/locked_pct", gaps)
 	}
 }

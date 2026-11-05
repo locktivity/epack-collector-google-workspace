@@ -9,7 +9,7 @@ superset of `trust`. No level removes a field that a lower level produced.
 
 | Level | Question it answers | What's in the artifact |
 |---|---|---|
-| `trust` (default) | Do they pass? | Org-wide aggregates and on/off flags: user / admin counts, 2-step-verification and passkey coverage, password-hygiene percentages and the configured password policy, authorized-app counts, and Context-Aware Access device-state deny evidence. No user emails, group names, device details, or audit-log events. Needs only the base scopes. |
+| `trust` (default) | Do they pass? | Org-wide aggregates and on/off flags: user / admin counts, 2-step-verification and passkey coverage, password-hygiene percentages and the configured password policy, and Context-Aware Access device-state deny evidence. No user emails, group names, device details, or audit-log events. Needs only the base scopes. |
 | `audit` | Where is the gap? | Per-resource inventories (users, admins + role assignments, custom roles, groups, org units, devices, SAML profiles, domains) and counts of admin, login, OAuth-token, and external-Drive-sharing events over a recent window. Email / login is the only user identifier. |
 | `internal` | Who or what specifically? | Per-user last-login, per-group member rosters, per-device records, security-relevant admin / login event slices, per-OAuth-token grants with scopes, SSO service hosts, and Vault hold metadata. |
 
@@ -38,14 +38,16 @@ role options are on the [configuration page](configuration.md#step-5-authorize-s
 When a scope is missing, a role is insufficient, or a feature is not licensed,
 the affected surface degrades rather than failing the run: scope and role
 denials are recorded under `diagnostics.permission_errors`, and licensing gaps,
-report lag, and truncation under `diagnostics.warnings`.
+report lag, and truncation under `diagnostics.warnings`. Each value left out is
+also listed, with a code, in `artifacts/google-workspace.collector-result.json`.
 
 ## What each level adds, per surface
 
 The core posture surfaces (users, activity, authentication, admins, passwords,
-apps) are always present, derived from the Reports usage report and a live
-Directory user scan. If either core fetch is denied or unavailable, its fields
-emit zeroed and a diagnostic is recorded; the rest of the artifact still ships.
+apps) are always present at their levels, derived from the Reports usage report
+and a live Directory user scan. If either core fetch is denied or unavailable,
+its fields are null, with a diagnostic and a gap in the collector result; the
+rest of the artifact still ships.
 
 ### Users (`users`)
 
@@ -58,9 +60,10 @@ emit zeroed and a diagnostic is recorded; the rest of the artifact still ships.
 
 ### Activity (`activity`) and Authentication (`authentication`)
 
-- **trust**: 7-day / 30-day active percentages; 2SV enrolled / enforced /
-  protected coverage, passkey-user coverage, security-key total. 2SV enrollment
-  and enforcement and the activity percentages are reconciled against live
+- **trust**: 2SV enrolled / enforced / protected coverage, passkey-user
+  coverage, security-key total. 2SV enrollment and enforcement are reconciled
+  against live Directory data.
+- **audit**: 7-day / 30-day active percentages, also reconciled against live
   Directory data.
 
 ### Admins (`admins`)
@@ -75,13 +78,16 @@ emit zeroed and a diagnostic is recorded; the rest of the artifact still ships.
 ### Passwords (`passwords`) and Apps (`apps`)
 
 - **trust**: weak-password and password-length-non-compliant percentages; the
-  configured password policy (`passwords.policy`); authorized-app count.
+  configured password policy (`passwords.policy`); the longest web session and
+  whether less secure apps are allowed (`sign_in`).
+- **internal**: authorized-app count (`apps`).
 
 The password policy is org-wide configuration naming no person and no org unit,
 so it sits at trust beside the percentages. It needs
 `cloud-identity.policies.readonly`, which is not one of the base scopes: without
 it the percentages still collect and the policy object is omitted with a
-scope-denied diagnostic.
+scope-denied diagnostic. The sign-in settings in `sign_in` come from the same
+API and scope, and are left out the same way.
 
 ### Device access (`device_access`)
 
@@ -129,8 +135,8 @@ The surfaces below first appear at `audit`; they return nothing at `trust`.
 - **internal**: `holds[]` (hold ID, matter, corpus, account count, org-unit-scoped,
   updated-at).
 
-Requires a Vault (eDiscovery) license; on an unlicensed tenant the surface is
-omitted and a diagnostic is recorded.
+Requires a Vault (eDiscovery) license; on an unlicensed tenant `licensed` is
+false, the counts are null, and a diagnostic is recorded.
 
 ### Drive external sharing (`drive_external_sharing`)
 
@@ -149,11 +155,10 @@ omitted and a diagnostic is recorded.
 
 ### OAuth tokens (`oauth_tokens`)
 
-- **trust**: omitted.
-- **audit**: tokens-issued and apps-with-new-tokens counts, counts by app and by
-  scope sensitivity (7-day window).
-- **internal**: `tokens[]` per-grant rows (user email, client ID, display name,
-  scopes, granted-at). Capped; see Truncation.
+- **trust** and **audit**: omitted.
+- **internal**: tokens-issued and apps-with-new-tokens counts, counts by app and
+  by scope sensitivity (7-day window), and `tokens[]` per-grant rows (user
+  email, client ID, display name, scopes, granted-at). Capped; see Truncation.
 
 ## Truncation
 
@@ -168,7 +173,7 @@ within the per-collector size limit:
 | Endpoint devices | 5,000 | last sync descending |
 | Audit / Drive / OAuth events | 5,000 each | most recent first |
 
-When a cap fires, the surface sets a `truncated_*` flag and a dropped count.
+When a cap fires, the surface sets a `truncated_*` flag and a dropped count. The collector result lists the capped list with the code `too_large`.
 
 ## Never emitted, at any level
 

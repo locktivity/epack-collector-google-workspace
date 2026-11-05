@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/locktivity/epack-collector-google-workspace/internal/googleworkspace"
+	"github.com/locktivity/epack/componentsdk"
 )
 
 const (
@@ -16,7 +17,8 @@ const (
 //
 // Returns nil whenever the policy could not be read, so the caller leaves the
 // fields absent rather than emitting zeroes. An absent minimum length must
-// never be readable as a minimum length of zero.
+// never be readable as a minimum length of zero. Every nil comes with a gap at
+// /passwords/policy. An answer with no password policy gets a vendor_error one.
 func (c *Collector) scanPasswordPolicy(ctx context.Context, scope scanScope) *PasswordPolicyConfig {
 	var policies []googleworkspace.PasswordPolicy
 	err := c.client.ListPasswordPolicies(ctx, scope.customerID, func(batch []googleworkspace.PasswordPolicy) error {
@@ -30,13 +32,16 @@ func (c *Collector) scanPasswordPolicy(ctx context.Context, scope scanScope) *Pa
 		// misconfiguration. Mirrors scanVault.
 		if isFeatureNotLicensed(err) {
 			c.warnFeatureNotLicensed("password_policy", "Policy API")
+			c.gaps.leaveOut(unlicensed("the tenant's edition does not include the Policy API"), "/passwords/policy")
 			return nil
 		}
 		c.warnSurfaceScan("password_policy", "cloud-identity.policies.readonly", "Super Admin", err)
+		c.gaps.leaveOut(failed(err), "/passwords/policy")
 		return nil
 	}
 	if len(policies) == 0 {
 		c.warn("surface password_policy: no password policy returned; the tenant may not expose one through the Policy API")
+		c.gaps.leaveOut(&missing{code: componentsdk.CodeVendorError, detail: "The Policy API returned no password policy."}, "/passwords/policy")
 		return nil
 	}
 
@@ -46,12 +51,16 @@ func (c *Collector) scanPasswordPolicy(ctx context.Context, scope scanScope) *Pa
 
 // aggregatePasswordPolicies reduces every policy in force to the weakest value
 // for each field. See PasswordPolicyConfig for why the floor is the useful
-// answer.
+// answer. Policies with the same rules count once in DistinctPolicies.
 func aggregatePasswordPolicies(policies []googleworkspace.PasswordPolicy) PasswordPolicyConfig {
+	distinct := make(map[googleworkspace.PasswordPolicy]struct{}, len(policies))
+	for _, policy := range policies {
+		distinct[policy] = struct{}{}
+	}
 	aggregate := PasswordPolicyConfig{
 		AllowedStrength:            strengthStrong,
 		EnforceRequirementsAtLogin: true,
-		DistinctPolicies:           len(policies),
+		DistinctPolicies:           len(distinct),
 	}
 
 	neverExpires := false

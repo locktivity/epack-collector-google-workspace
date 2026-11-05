@@ -7,14 +7,23 @@ import (
 	"github.com/locktivity/epack/componentsdk"
 )
 
-// Security-relevant login event names.
+// Security-relevant login event names. A blocked suspicious sign-in has one
+// of three event names, and each counts as a suspicious login.
 const (
-	loginEventFailure      = "login_failure"
-	loginEventSuspicious   = "suspicious_login"
-	loginEventPasswordLeak = "account_disabled_password_leak"
+	loginEventFailure                 = "login_failure"
+	loginEventSuspicious              = "suspicious_login"
+	loginEventSuspiciousLessSecureApp = "suspicious_login_less_secure_app"
+	loginEventSuspiciousProgrammatic  = "suspicious_programmatic_login"
+	loginEventPasswordLeak            = "account_disabled_password_leak"
 )
 
-var securityRelevantLoginEvents = []string{loginEventFailure, loginEventSuspicious, loginEventPasswordLeak}
+var securityRelevantLoginEvents = []string{
+	loginEventFailure,
+	loginEventSuspicious,
+	loginEventSuspiciousLessSecureApp,
+	loginEventSuspiciousProgrammatic,
+	loginEventPasswordLeak,
+}
 
 // scanLoginAuditLog collects the Login audit surface (suspicious / failed
 // logins, 7-day window). Audit emits counts; internal adds the event slice with
@@ -37,7 +46,7 @@ func (c *Collector) scanLoginAuditLog(ctx context.Context, scope scanScope) *Log
 
 	for _, e := range events {
 		switch e.Name {
-		case loginEventSuspicious:
+		case loginEventSuspicious, loginEventSuspiciousLessSecureApp, loginEventSuspiciousProgrammatic:
 			result.SuspiciousLogins++
 		case loginEventFailure:
 			result.FailedLogins++
@@ -54,7 +63,7 @@ func (c *Collector) scanLoginAuditLog(ctx context.Context, scope scanScope) *Log
 	}
 
 	if includeEvents {
-		result.Events, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, slice, AuditEventsCap, "login audit-log event slice", func(a, b LoginEvent) bool {
+		result.Events, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, slice, AuditEventsCap, "login audit-log event slice", "/login_audit_log/events", func(a, b LoginEvent) bool {
 			return a.Time > b.Time
 		})
 	}

@@ -65,16 +65,18 @@ func (c *Collector) scanOAuthTokens(ctx context.Context, scope scanScope) *OAuth
 	}
 	result.AppsWithNewTokens = len(apps)
 
-	result.Tokens, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, tokens, AuditEventsCap, "oauth token list", func(a, b OAuthToken) bool {
+	result.Tokens, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, tokens, AuditEventsCap, "oauth token list", "/oauth_tokens/tokens", func(a, b OAuthToken) bool {
 		return a.GrantedAt > b.GrantedAt
 	})
 	return result
 }
 
 // scopeSensitivity buckets an app's OAuth scopes into low / medium / high, where
-// the bucket is the highest sensitivity among the scopes. High covers
-// read-write access to user content (mail/drive/calendar mutate); medium covers
-// read-only content access; low covers identity / profile scopes only.
+// the bucket is the highest sensitivity among the scopes. Low covers identity
+// and profile scopes only, and medium covers read-only access. High covers
+// every other scope, such as read-write access to mail, Drive, or calendar. A
+// scope that is not known to be read-only counts as high, since it may be able
+// to change data.
 func scopeSensitivity(scopes []string) string {
 	bucket := "low"
 	for _, s := range scopes {
@@ -91,13 +93,18 @@ func scopeSensitivity(scopes []string) string {
 func classifyScope(scope string) string {
 	s := strings.ToLower(scope)
 	switch {
-	case strings.Contains(s, "userinfo"), strings.Contains(s, "openid"), strings.HasSuffix(s, "/profile"), strings.HasSuffix(s, "/email"):
+	case strings.Contains(s, "userinfo"), strings.Contains(s, "openid"), strings.HasSuffix(s, "/profile"), strings.HasSuffix(s, "/email"), s == "profile", s == "email":
 		return "low"
-	case strings.Contains(s, "readonly"), strings.Contains(s, ".read"):
+	case isReadOnlyScope(s):
 		return "medium"
-	case strings.Contains(s, "mail"), strings.Contains(s, "gmail"), strings.Contains(s, "drive"), strings.Contains(s, "calendar"), strings.Contains(s, "admin"), strings.Contains(s, "cloud-platform"):
-		return "high"
 	default:
-		return "medium"
+		return "high"
 	}
+}
+
+// isReadOnlyScope checks a lowercased scope for Google's read-only markers,
+// such as drive.readonly, devstorage.read_only, cloud-platform.read-only, and
+// fitness.activity.read. devstorage.read_write is not read-only.
+func isReadOnlyScope(s string) bool {
+	return strings.Contains(s, "readonly") || strings.Contains(s, "read_only") || strings.Contains(s, "read-only") || strings.HasSuffix(s, ".read")
 }

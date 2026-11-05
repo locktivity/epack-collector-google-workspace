@@ -4,433 +4,1879 @@
   "title": "Google Workspace Posture",
   "description": "Google Workspace identity and security posture artifact.",
   "type": "object",
-  "required": [
-    "schema_version",
-    "collected_at",
-    "collected_at_level",
-    "usage_report_date",
-    "provider",
-    "org_domain",
-    "customer_id",
-    "users",
-    "activity",
-    "authentication",
-    "admins",
-    "passwords",
-    "apps"
-  ],
+  "required": ["schema_version", "collected_at", "collected_at_level", "usage_report_date", "provider", "org_domain", "customer_id", "users", "authentication", "admins", "passwords"],
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "1.0.0"
+      "const": "1.0.0",
+      "x-epack-label": "Schema version",
+      "x-epack-summary": "Version of the artifact format. Always 1.0.0 for this collector."
     },
     "collected_at": {
       "type": "string",
       "format": "date-time",
-      "description": "Timestamp when the collector ran."
+      "description": "Timestamp when the collector ran.",
+      "x-epack-label": "Collection time",
+      "x-epack-summary": "UTC timestamp of when the collector ran."
     },
     "collected_at_level": {
       "type": "string",
       "enum": ["trust", "audit", "internal"],
-      "description": "Collection level the artifact was produced at. Audit and internal additions are strictly additive; the schema version stays 1.0.0 (the collector binary version carries the level-aware signal)."
+      "description": "Collection level the artifact was produced at. Audit and internal additions are strictly additive; the schema version stays 1.0.0 (the collector binary version carries the level-aware signal).",
+      "x-epack-label": "Collection level",
+      "x-epack-summary": "How deep the collection ran."
     },
     "usage_report_date": {
-      "type": "string",
+      "type": ["string", "null"],
       "format": "date",
-      "description": "Date of the Google Workspace usage report snapshot (typically yesterday)."
+      "description": "Date of the Google Workspace usage report snapshot (typically yesterday). Null when no usage report could be read.",
+      "x-epack-label": "Usage report date",
+      "x-epack-summary": "Date of the usage report the report-based values come from. It is usually a few days before the run."
     },
     "provider": {
       "type": "string",
-      "const": "google-workspace"
+      "const": "google-workspace",
+      "x-epack-label": "Provider",
+      "x-epack-summary": "Source system. Always google-workspace."
     },
     "org_domain": {
-      "type": "string",
-      "description": "Primary domain of the Google Workspace tenant."
+      "type": ["string", "null"],
+      "description": "Primary domain of the Google Workspace tenant. Null when the tenant record could not be read; only a Super Admin can read it.",
+      "x-epack-label": "Organization domain",
+      "x-epack-summary": "Primary domain of the Google Workspace tenant."
     },
     "customer_id": {
-      "type": "string",
-      "description": "Google Workspace customer ID."
+      "type": ["string", "null"],
+      "description": "Google Workspace customer ID. Null when the tenant record could not be read; only a Super Admin can read it.",
+      "x-epack-label": "Customer ID",
+      "x-epack-summary": "Google Workspace customer ID."
     },
     "users": {
       "type": "object",
-      "required": ["total", "suspended", "archived", "locked_pct", "inactive_pct", "inactive_days"],
+      "required": ["total", "suspended", "archived", "active", "locked_pct", "inactive_pct", "inactive_days"],
       "properties": {
         "total": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Total user accounts."
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Total user accounts, from the usage report.",
+          "x-epack-label": "Total users",
+          "x-epack-summary": "User accounts in the tenant in every state, from the usage report. The usage report percentages are taken over this count.",
+          "x-epack-method": "Reads accounts:num_users from the customer usage report for the newest day Google has published, up to 10 days back."
         },
         "suspended": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Suspended user accounts."
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Suspended user accounts, from the usage report.",
+          "x-epack-label": "Suspended users",
+          "x-epack-summary": "Suspended accounts, from the usage report. A suspended user cannot sign in, and their data is kept.",
+          "x-epack-method": "Reads accounts:num_suspended_users from the customer usage report."
         },
         "archived": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Archived user accounts."
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Archived user accounts, from the usage report.",
+          "x-epack-label": "Archived users",
+          "x-epack-summary": "Archived accounts, from the usage report. An archived user cannot sign in, and their data is kept for retention.",
+          "x-epack-method": "Reads accounts:num_archived_users from the customer usage report."
+        },
+        "active": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Active (not suspended or archived) users in the live Directory scan. The live percentages are calculated against it.",
+          "x-epack-label": "Active users",
+          "x-epack-summary": "Users who are not suspended or archived, from the live Directory scan. The live percentages are taken over this count.",
+          "x-epack-method": "Counts the Directory users that are neither suspended nor archived."
         },
         "locked_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users currently locked out."
+          "x-epack-denominator": "total",
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Percentage of users currently locked out.",
+          "x-epack-label": "Locked-out users",
+          "x-epack-summary": "Share of total users who are locked out, from the usage report.",
+          "x-epack-method": "Divides the usage report's accounts:num_locked_users by its accounts:num_users."
         },
         "inactive_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of active users inactive for 90+ days (from Directory API lastLoginTime)."
+          "x-epack-denominator": "active",
+          "description": "Percentage of active users inactive for 90+ days (from Directory API lastLoginTime).",
+          "x-epack-label": "Inactive users",
+          "x-epack-summary": "Share of active users with no sign-in in the last 90 days, from the live Directory scan. A user who has never signed in counts as inactive.",
+          "x-epack-method": "Counts the active users whose Directory lastLoginTime is more than 90 days before the run, or who never signed in, out of all active users."
         },
         "inactive_days": {
           "type": "integer",
           "minimum": 0,
-          "description": "Inactivity threshold in days."
+          "description": "Inactivity threshold in days.",
+          "x-epack-label": "Inactivity threshold",
+          "x-epack-summary": "Days without a sign-in after which a user counts as inactive. It is 90.",
+          "x-epack-method": "Writes the fixed 90-day threshold of the inactivity count."
         },
         "inventory": {
           "type": "array",
+          "x-epack-level": "audit",
           "description": "Per-user inventory (audit and above). Each row carries primary_email, status, org_unit_path, 2sv flags, and activity flags; internal adds last_login_at. Per-user passkey / password strength are not available per user.",
-          "items": { "type": "object", "additionalProperties": true }
+          "x-epack-label": "User inventory",
+          "x-epack-summary": "Per-user rows with status, org unit, 2-step verification, and recent activity. The Directory API has no per-user passkey or password strength.",
+          "items": {
+            "type": "object",
+            "required": ["primary_email", "suspended", "archived", "agreed_to_terms", "ip_allowlisted", "2sv_enrolled", "2sv_enforced", "active_7d", "active_30d"],
+            "properties": {
+              "primary_email": {
+                "type": "string",
+                "description": "The user's primary email address.",
+                "x-epack-label": "User email",
+                "x-epack-summary": "Primary email address of the user."
+              },
+              "suspended": {
+                "type": "boolean",
+                "description": "Whether the account is suspended.",
+                "x-epack-label": "Suspended",
+                "x-epack-summary": "Whether the account is suspended."
+              },
+              "archived": {
+                "type": "boolean",
+                "description": "Whether the account is archived.",
+                "x-epack-label": "Archived",
+                "x-epack-summary": "Whether the account is archived. An archived user cannot sign in."
+              },
+              "org_unit_path": {
+                "type": "string",
+                "description": "Path of the org unit the user belongs to.",
+                "x-epack-label": "Org unit",
+                "x-epack-summary": "Path of the org unit the user belongs to. Policies such as 2-step verification enforcement apply by org unit."
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the account was created.",
+                "x-epack-label": "Created",
+                "x-epack-summary": "Account creation timestamp."
+              },
+              "agreed_to_terms": {
+                "type": "boolean",
+                "description": "Whether the user has accepted the Google Workspace terms of service.",
+                "x-epack-label": "Agreed to terms",
+                "x-epack-summary": "Whether the user has accepted the Google Workspace terms of service. A user accepts them at the first sign-in."
+              },
+              "ip_allowlisted": {
+                "type": "boolean",
+                "description": "Whether the user's IP address is subject to Google's deprecated IP allowlist setting.",
+                "x-epack-label": "IP allowlisted",
+                "x-epack-summary": "Whether the user's IP address is subject to Google's deprecated IP allowlist setting."
+              },
+              "2sv_enrolled": {
+                "type": "boolean",
+                "description": "Whether the user is enrolled in 2-step verification.",
+                "x-epack-label": "Two-step enrolled",
+                "x-epack-summary": "Whether the user has set up 2-step verification."
+              },
+              "2sv_enforced": {
+                "type": "boolean",
+                "description": "Whether a policy requires 2-step verification for the user.",
+                "x-epack-label": "Two-step required",
+                "x-epack-summary": "Whether a policy requires 2-step verification for the user."
+              },
+              "active_7d": {
+                "type": "boolean",
+                "description": "Whether the user last signed in within the 7 days before the run.",
+                "x-epack-label": "Active in 7 days",
+                "x-epack-summary": "Whether the user signed in within the 7 days before the run."
+              },
+              "active_30d": {
+                "type": "boolean",
+                "description": "Whether the user last signed in within the 30 days before the run.",
+                "x-epack-label": "Active in 30 days",
+                "x-epack-summary": "Whether the user signed in within the 30 days before the run."
+              },
+              "last_login_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the user last signed in. Absent when the user has never signed in.",
+                "x-epack-label": "Last login",
+                "x-epack-summary": "When the user last signed in.",
+                "x-epack-level": "internal"
+              },
+              "change_password_at_next_login": {
+                "type": "boolean",
+                "description": "Whether the user must change their password at the next sign-in.",
+                "x-epack-label": "Password change pending",
+                "x-epack-summary": "Whether the user must change their password at the next sign-in. An admin often sets this after a password reset.",
+                "x-epack-level": "internal"
+              }
+            },
+            "additionalProperties": false
+          }
         },
         "truncated_inventory": {
           "type": "boolean",
-          "description": "True when the per-user inventory was capped (50,000 rows, ACTIVE-first then email ascending). Omitted when within the cap."
+          "description": "True when the per-user inventory was capped (50,000 rows, ACTIVE-first then email ascending). Omitted when within the cap.",
+          "x-epack-label": "User inventory truncated",
+          "x-epack-summary": "Whether the user list was capped at 50,000 rows. Active users are kept first.",
+          "x-epack-level": "audit"
         },
         "truncated_inventory_dropped": {
           "type": "integer",
           "minimum": 0,
-          "description": "Number of user inventory rows dropped by the cap. Omitted when within the cap."
+          "description": "Number of user inventory rows dropped by the cap. Omitted when within the cap.",
+          "x-epack-label": "User rows dropped",
+          "x-epack-summary": "Users left out of the list by the cap.",
+          "x-epack-level": "audit"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Users",
+      "x-epack-summary": "User population and account-status metrics."
     },
     "activity": {
       "type": "object",
+      "x-epack-level": "audit",
       "required": ["active_7d_pct", "active_30d_pct"],
       "properties": {
         "active_7d_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users who logged in within the last 7 days."
+          "x-epack-denominator": "/users/active",
+          "description": "Percentage of active users who logged in within the last 7 days, from the live Directory scan.",
+          "x-epack-label": "Active in 7 days",
+          "x-epack-summary": "Share of active users who signed in within the last 7 days, from the live Directory scan."
         },
         "active_30d_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users who logged in within the last 30 days."
+          "x-epack-denominator": "/users/active",
+          "description": "Percentage of active users who logged in within the last 30 days, from the live Directory scan.",
+          "x-epack-label": "Active in 30 days",
+          "x-epack-summary": "Share of active users who signed in within the last 30 days, from the live Directory scan."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Login activity",
+      "x-epack-summary": "Shares of active users who signed in recently, from the live Directory scan."
     },
     "authentication": {
       "type": "object",
-      "required": [
-        "2sv_enrolled_pct",
-        "2sv_enforced_pct",
-        "2sv_protected_pct",
-        "passkey_users_pct",
-        "security_keys_total"
-      ],
+      "required": ["2sv_enrolled_pct", "2sv_enforced_pct", "2sv_protected_pct", "passkey_users_pct", "security_keys_total"],
       "properties": {
         "2sv_enrolled_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users enrolled in 2-step verification."
+          "x-epack-denominator": "/users/active",
+          "description": "Percentage of active users enrolled in 2-step verification, from the live Directory scan.",
+          "x-epack-label": "Two-step enrolled",
+          "x-epack-summary": "Share of active users who have set up 2-step verification, from the live Directory scan. It counts users whether or not a policy requires it.",
+          "x-epack-method": "Counts the active Directory users with isEnrolledIn2Sv set, out of all active users."
         },
         "2sv_enforced_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users with 2-step verification enforced by policy."
+          "x-epack-denominator": "/users/active",
+          "description": "Percentage of active users with 2-step verification enforced by policy, from the live Directory scan.",
+          "x-epack-label": "Two-step required",
+          "x-epack-summary": "Share of active users whom a policy requires to use 2-step verification, from the live Directory scan.",
+          "x-epack-method": "Counts the active Directory users with isEnforcedIn2Sv set, out of all active users."
         },
         "2sv_protected_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users actually protected by 2-step verification."
+          "x-epack-denominator": "/users/total",
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Percentage of users actually protected by 2-step verification.",
+          "x-epack-label": "Two-step protected",
+          "x-epack-summary": "Share of total users protected by 2-step verification, from the usage report.",
+          "x-epack-method": "Divides the usage report's accounts:num_users_2sv_protected by its accounts:num_users."
         },
         "passkey_users_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users with passkeys enrolled."
+          "x-epack-denominator": "/users/total",
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Percentage of users with passkeys enrolled.",
+          "x-epack-label": "Passkey users",
+          "x-epack-summary": "Share of total users with a passkey, from the usage report. Passkeys resist phishing.",
+          "x-epack-method": "Divides the usage report's accounts:num_users_with_passkeys_enrolled by its accounts:num_users."
         },
         "security_keys_total": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Total number of registered security keys across the tenant."
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Total number of registered security keys across the tenant.",
+          "x-epack-label": "Security keys",
+          "x-epack-summary": "Hardware security keys registered across the tenant, from the usage report. One user can register several.",
+          "x-epack-method": "Reads accounts:num_security_keys from the customer usage report."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Two-step verification",
+      "x-epack-summary": "Adoption and enforcement of 2-step verification and passkeys. The enrolled and required shares are over active users, and the protected and passkey shares over total users."
     },
     "admins": {
       "type": "object",
-      "required": [
-        "privileged_users_count",
-        "super_admin_count",
-        "delegated_admin_count",
-        "privileged_users_2sv_enrolled_pct",
-        "privileged_users_2sv_enforced_pct"
-      ],
+      "required": ["privileged_users_count", "super_admin_count", "delegated_admin_count", "privileged_users_2sv_enrolled_pct", "privileged_users_2sv_enforced_pct"],
       "properties": {
         "privileged_users_count": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Number of unique active privileged users across super admin and delegated admin roles."
+          "x-epack-rollup": {
+            "rows": "inventory",
+            "as": "count"
+          },
+          "description": "Number of unique active privileged users across super admin and delegated admin roles.",
+          "x-epack-label": "Privileged users",
+          "x-epack-summary": "Active users with a super admin or delegated admin role. Each user counts once.",
+          "x-epack-method": "Counts the active Directory users with isAdmin or isDelegatedAdmin set."
         },
         "super_admin_count": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Number of active super administrators."
+          "x-epack-rollup": {
+            "rows": "inventory",
+            "where": "/super_admin",
+            "as": "count"
+          },
+          "description": "Number of active super administrators.",
+          "x-epack-label": "Super admins",
+          "x-epack-summary": "Active super admins. A super admin has full control of the tenant.",
+          "x-epack-method": "Counts the active Directory users with isAdmin set."
         },
         "delegated_admin_count": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Number of active delegated administrators."
+          "x-epack-rollup": {
+            "rows": "inventory",
+            "where": "/delegated_admin",
+            "as": "count"
+          },
+          "description": "Number of active delegated administrators.",
+          "x-epack-label": "Delegated admins",
+          "x-epack-summary": "Active users with a delegated admin role. A delegated role grants a limited set of admin privileges.",
+          "x-epack-method": "Counts the active Directory users with isDelegatedAdmin set."
         },
         "privileged_users_2sv_enrolled_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of active privileged users enrolled in 2-step verification."
+          "x-epack-denominator": "privileged_users_count",
+          "x-epack-rollup": {
+            "rows": "inventory",
+            "where": "/2sv_enrolled",
+            "as": "pct"
+          },
+          "description": "Percentage of active privileged users enrolled in 2-step verification.",
+          "x-epack-label": "Admin two-step enrolled",
+          "x-epack-summary": "Share of active privileged users who have set up 2-step verification.",
+          "x-epack-method": "Counts the active privileged users with isEnrolledIn2Sv set, out of all active privileged users."
         },
         "privileged_users_2sv_enforced_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of active privileged users with 2-step verification enforced."
+          "x-epack-denominator": "privileged_users_count",
+          "x-epack-rollup": {
+            "rows": "inventory",
+            "where": "/2sv_enforced",
+            "as": "pct"
+          },
+          "description": "Percentage of active privileged users with 2-step verification enforced.",
+          "x-epack-label": "Admin two-step required",
+          "x-epack-summary": "Share of active privileged users whom a policy requires to use 2-step verification. An admin who is enrolled but not required can turn 2-step verification off.",
+          "x-epack-method": "Counts the active privileged users with isEnforcedIn2Sv set, out of all active privileged users."
         },
         "inventory": {
           "type": "array",
+          "x-epack-level": "audit",
           "description": "Per-privileged-user inventory (audit and above): primary_email, super/delegated flags, 2sv flags, role names; internal adds the org_unit_scoped flag.",
-          "items": { "type": "object", "additionalProperties": true }
+          "x-epack-label": "Admin inventory",
+          "x-epack-summary": "Per-privileged-user rows with role type, 2-step verification flags, role names, and whether any grant is limited to an org unit.",
+          "items": {
+            "type": "object",
+            "required": ["primary_email", "super_admin", "delegated_admin", "2sv_enrolled", "2sv_enforced"],
+            "properties": {
+              "primary_email": {
+                "type": "string",
+                "description": "The admin's primary email address.",
+                "x-epack-label": "Admin email",
+                "x-epack-summary": "Primary email address of the privileged user."
+              },
+              "super_admin": {
+                "type": "boolean",
+                "description": "Whether the user is a super administrator.",
+                "x-epack-label": "Super admin",
+                "x-epack-summary": "Whether the user is a super admin."
+              },
+              "delegated_admin": {
+                "type": "boolean",
+                "description": "Whether the user holds a delegated admin role.",
+                "x-epack-label": "Delegated admin",
+                "x-epack-summary": "Whether the user holds a delegated admin role."
+              },
+              "2sv_enrolled": {
+                "type": "boolean",
+                "description": "Whether the admin is enrolled in 2-step verification.",
+                "x-epack-label": "Two-step enrolled",
+                "x-epack-summary": "Whether the admin has set up 2-step verification."
+              },
+              "2sv_enforced": {
+                "type": "boolean",
+                "description": "Whether a policy requires 2-step verification for the admin.",
+                "x-epack-label": "Two-step required",
+                "x-epack-summary": "Whether a policy requires 2-step verification for the admin."
+              },
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Names of the admin roles assigned to the user. Absent when the role assignments could not be read.",
+                "x-epack-label": "Roles",
+                "x-epack-summary": "Admin roles granted to the user, such as User Management Admin."
+              },
+              "org_unit_scoped": {
+                "type": "boolean",
+                "description": "Whether any of the admin role grants is limited to an org unit.",
+                "x-epack-label": "Org-unit scoped",
+                "x-epack-summary": "Whether any of the admin's role grants is limited to an org unit.",
+                "x-epack-level": "internal"
+              }
+            },
+            "additionalProperties": false
+          }
         },
         "custom_roles": {
           "type": "array",
+          "x-epack-level": "audit",
           "description": "Admin-defined (non-system) custom roles (audit and above): name, description, privilege_count.",
-          "items": { "type": "object", "additionalProperties": true }
+          "x-epack-label": "Custom admin roles",
+          "x-epack-summary": "Admin roles defined in the tenant, beyond Google's system roles.",
+          "items": {
+            "type": "object",
+            "required": ["name", "privilege_count"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Role name.",
+                "x-epack-label": "Role name",
+                "x-epack-summary": "Name of the custom admin role."
+              },
+              "description": {
+                "type": "string",
+                "description": "Role description.",
+                "x-epack-label": "Role description",
+                "x-epack-summary": "Description of the role."
+              },
+              "privilege_count": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of privileges the role grants.",
+                "x-epack-label": "Privileges",
+                "x-epack-summary": "Privileges the custom role grants."
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Administrators",
+      "x-epack-summary": "Privileged account counts and their 2-step verification coverage."
     },
     "passwords": {
       "type": "object",
       "required": ["weak_password_pct", "password_length_non_compliant_pct"],
       "properties": {
         "weak_password_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users with weak passwords."
+          "x-epack-denominator": "/users/total",
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Percentage of users with weak passwords.",
+          "x-epack-label": "Weak passwords",
+          "x-epack-summary": "Share of total users with a password rated weak, from the usage report.",
+          "x-epack-method": "Divides the usage report's accounts:num_users_password_strength_weak by its accounts:num_users."
         },
         "password_length_non_compliant_pct": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage of users with passwords that do not meet length requirements."
+          "x-epack-denominator": "/users/total",
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Percentage of users with passwords that do not meet length requirements.",
+          "x-epack-label": "Short passwords",
+          "x-epack-summary": "Share of total users whose password is shorter than the length policy requires, from the usage report.",
+          "x-epack-method": "Divides the usage report's accounts:num_users_password_length_non_compliant by its accounts:num_users."
         },
         "policy": {
           "type": "object",
           "description": "Configured password policy, reduced to the weakest value in force anywhere in the tenant. Absent when the Policy API could not be read; absence never means permissive.",
+          "x-epack-label": "Password policy",
+          "x-epack-summary": "The password rules the tenant requires. Where org units or groups set different rules, these values describe the weakest of them.",
           "required": ["minimum_length", "maximum_length", "allowed_strength", "enforce_requirements_at_login", "allow_reuse", "expiration_days", "distinct_policies"],
           "properties": {
             "minimum_length": {
               "type": "integer",
               "minimum": 8,
               "maximum": 100,
-              "description": "Smallest minimum password length across every policy in force."
+              "description": "Smallest minimum password length across every policy in force.",
+              "x-epack-label": "Minimum length",
+              "x-epack-summary": "Shortest password any policy in force accepts.",
+              "x-epack-method": "Takes the smallest minimumLength of the security.password policies from the Policy API."
             },
             "maximum_length": {
               "type": "integer",
               "minimum": 8,
               "maximum": 100,
-              "description": "Largest maximum password length across every policy in force."
+              "description": "Largest maximum password length across every policy in force.",
+              "x-epack-label": "Maximum length",
+              "x-epack-summary": "Longest password any policy in force accepts.",
+              "x-epack-method": "Takes the largest maximumLength of the security.password policies from the Policy API."
             },
             "allowed_strength": {
               "type": "string",
               "enum": ["strong", "weak"],
-              "description": "strong only when every policy in force requires strong passwords. weak when any policy permits weak ones."
+              "description": "strong only when every policy in force requires strong passwords. weak when any policy permits weak ones.",
+              "x-epack-label": "Strength requirement",
+              "x-epack-summary": "Whether every policy in force requires a strong password. Google Workspace has no setting for character classes."
             },
             "enforce_requirements_at_login": {
               "type": "boolean",
-              "description": "True only when every policy in force binds users who already have a password. False means a non-compliant password survives until its owner changes it."
+              "description": "True only when every policy in force binds users who already have a password. False means a non-compliant password survives until its owner changes it.",
+              "x-epack-label": "Applies to existing users",
+              "x-epack-summary": "Whether every policy in force applies to users who already have a password. When false, an old password that breaks the rules stays valid until its owner changes it.",
+              "x-epack-method": "Checks that every security.password policy from the Policy API sets enforceRequirementsAtLogin."
             },
             "allow_reuse": {
               "type": "boolean",
-              "description": "True when any policy in force permits reusing a previous password."
+              "description": "True when any policy in force permits reusing a previous password.",
+              "x-epack-label": "Password reuse",
+              "x-epack-summary": "Whether any policy in force lets a user set a previous password again.",
+              "x-epack-method": "Checks whether any security.password policy from the Policy API sets allowReuse."
             },
             "expiration_days": {
               "type": "integer",
               "minimum": 0,
-              "description": "Longest password expiration across every policy in force. 0 means passwords never expire, which is the weakest setting."
+              "description": "Longest password expiration across every policy in force. 0 means passwords never expire, which is the weakest setting.",
+              "x-epack-label": "Expiration",
+              "x-epack-summary": "Longest time in days a password can be used before it must change, across the policies in force. 0 means passwords never expire.",
+              "x-epack-method": "Takes the longest expirationDuration of the security.password policies in whole days, and writes 0 when any policy has none."
             },
             "distinct_policies": {
               "type": "integer",
               "minimum": 1,
-              "description": "Number of distinct password policies found. Greater than 1 means the tenant is not uniform and the values in this object describe the floor."
+              "description": "Number of distinct password policies found. Greater than 1 means the tenant is not uniform and the values in this object describe the floor.",
+              "x-epack-label": "Distinct policies",
+              "x-epack-summary": "Distinct password policies the tenant defines. Org units and groups with the same rules count once. When there are several, the password policy values describe the weakest of them.",
+              "x-epack-method": "Counts the security.password policies from the Policy API, with policies that set the same rules counted once."
             }
           },
           "additionalProperties": false
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Passwords",
+      "x-epack-summary": "Password strength and length across total users, from the usage report, and the password policy."
+    },
+    "sign_in": {
+      "type": "object",
+      "description": "Sign-in settings from the Policy API, each the weakest value in force anywhere in the tenant. A value is absent, with a gap, when its policies could not be read.",
+      "properties": {
+        "web_session_duration_max_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Longest web session duration any session controls policy sets, in minutes.",
+          "x-epack-label": "Longest web session (min)",
+          "x-epack-summary": "Longest time in minutes anyone can stay signed in on the web before signing in again, across the org units and groups that set one.",
+          "x-epack-method": "Takes the longest webSessionDuration of the security.session_controls policies from the Policy API, in minutes, rounded up.",
+          "x-epack-goal": "lower"
+        },
+        "less_secure_apps_allowed": {
+          "type": "boolean",
+          "description": "True when any less secure apps policy still sets allowLessSecureApps. Google stopped supporting less secure apps on May 1, 2025.",
+          "x-epack-label": "Less secure apps allowed",
+          "x-epack-summary": "Whether any org unit or group still has the retired less secure apps setting turned on. Since May 1, 2025, people can't use less secure apps to sign in with only a username and password.",
+          "x-epack-method": "Checks whether any security.less_secure_apps policy from the Policy API sets allowLessSecureApps.",
+          "x-epack-goal": false
+        }
+      },
+      "additionalProperties": false,
+      "x-epack-label": "Sign-in settings",
+      "x-epack-summary": "How long a web session lasts and whether apps with legacy sign-in are allowed, from the Policy API."
     },
     "apps": {
       "type": "object",
+      "x-epack-level": "internal",
       "required": ["authorized_apps_count"],
       "properties": {
         "authorized_apps_count": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Number of third-party apps authorized in the tenant."
+          "x-epack-as-of": "/usage_report_date",
+          "description": "Number of third-party apps authorized in the tenant.",
+          "x-epack-label": "Authorized apps",
+          "x-epack-summary": "Third-party apps authorized to access tenant data, from the usage report."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Connected apps",
+      "x-epack-summary": "Third-party application access metrics."
     },
     "device_access": {
       "type": "object",
-      "required": [
-        "lookback_days",
-        "context_aware_access_denied_events",
-        "device_state_denied_events",
-        "managed_device_requirement_evidenced"
-      ],
+      "required": ["lookback_days", "context_aware_access_denied_events", "device_state_denied_events", "managed_device_requirement_evidenced"],
       "properties": {
         "lookback_days": {
           "type": "integer",
           "minimum": 0,
-          "description": "Number of days of Context-Aware Access audit history searched for device-state deny events."
+          "description": "Number of days of Context-Aware Access audit history searched for device-state deny events.",
+          "x-epack-label": "Lookback window",
+          "x-epack-summary": "Days of Context-Aware Access audit history searched for deny events. It is 90.",
+          "x-epack-method": "Writes the fixed 90-day window of the deny event search."
         },
         "context_aware_access_denied_events": {
           "type": "integer",
           "minimum": 0,
-          "description": "Total Context-Aware Access deny events observed in the lookback window."
+          "description": "Total Context-Aware Access deny events observed in the lookback window.",
+          "x-epack-label": "Access denials",
+          "x-epack-summary": "Context-Aware Access deny events in the lookback window. Access levels in monitor mode log deny events too.",
+          "x-epack-method": "Counts the ACCESS_DENY_EVENT entries in the Reports API's context_aware_access log for the 90 days before the run."
         },
         "device_state_denied_events": {
           "type": "integer",
           "minimum": 0,
-          "description": "Count of deny events that included a device-state parameter, which is positive evidence that a device-state access level fired."
+          "description": "Count of deny events that included a device-state parameter, which is positive evidence that a device-state access level fired.",
+          "x-epack-label": "Device-state denials",
+          "x-epack-summary": "Deny events in the lookback window that cite the device's state. They show that an access level checked a device condition.",
+          "x-epack-method": "Counts the ACCESS_DENY_EVENT entries in the window that set CAA_DEVICE_STATE."
         },
         "managed_device_requirement_evidenced": {
           "type": "boolean",
-          "description": "Whether Context-Aware Access audit logs show device-state-based access denials. This is deny-event evidence, not proof of complete policy coverage."
+          "description": "Whether Context-Aware Access audit logs show device-state-based access denials. This is deny-event evidence, not proof of complete policy coverage.",
+          "x-epack-label": "Managed-device requirement seen",
+          "x-epack-summary": "Whether any deny event in the lookback window cites the device's state. When false, the tenant may still require managed devices, since the audit log records only denials.",
+          "x-epack-method": "Checks whether any ACCESS_DENY_EVENT entry in the window sets CAA_DEVICE_STATE."
         },
         "access_context_manager": {
           "type": "object",
-          "required": [
-            "access_policy_name",
-            "basic_access_levels_count",
-            "custom_access_levels_count",
-            "basic_device_policy_access_levels_count",
-            "basic_managed_device_access_levels_count"
-          ],
+          "required": ["access_policy_name", "basic_access_levels_count", "custom_access_levels_count", "basic_device_policy_access_levels_count", "basic_managed_device_access_levels_count"],
           "properties": {
             "access_policy_name": {
               "type": "string",
-              "description": "Access Context Manager policy resource used for config enrichment."
+              "description": "Access Context Manager policy resource used for config enrichment.",
+              "x-epack-label": "Access policy",
+              "x-epack-summary": "Resource name of the Access Context Manager policy."
             },
             "access_policy_parent": {
               "type": "string",
-              "description": "Parent organization resource for the access policy."
+              "description": "Parent organization resource for the access policy.",
+              "x-epack-label": "Policy parent",
+              "x-epack-summary": "Organization resource the access policy belongs to."
             },
             "basic_access_levels_count": {
               "type": "integer",
               "minimum": 0,
-              "description": "Number of basic Access Context Manager access levels in the resolved policy."
+              "description": "Number of basic Access Context Manager access levels in the resolved policy.",
+              "x-epack-label": "Basic access levels",
+              "x-epack-summary": "Basic access levels in the access policy.",
+              "x-epack-method": "Counts the access levels in the access policy that have no custom CEL expression."
             },
             "custom_access_levels_count": {
               "type": "integer",
               "minimum": 0,
-              "description": "Number of custom CEL-based access levels in the resolved policy. These are not deeply analyzed by the collector."
+              "description": "Number of custom CEL-based access levels in the resolved policy. These are not deeply analyzed by the collector.",
+              "x-epack-label": "Custom access levels",
+              "x-epack-summary": "Custom CEL access levels in the access policy. The device policy counts leave these out.",
+              "x-epack-method": "Counts the access levels in the access policy that have a custom CEL expression."
             },
             "basic_device_policy_access_levels_count": {
               "type": "integer",
               "minimum": 0,
-              "description": "Number of basic access levels that include a devicePolicy condition."
+              "description": "Number of basic access levels that include a devicePolicy condition.",
+              "x-epack-label": "Levels with device policy",
+              "x-epack-summary": "Basic access levels with a device policy condition.",
+              "x-epack-method": "Counts the basic access levels with a devicePolicy in any condition."
             },
             "basic_managed_device_access_levels_count": {
               "type": "integer",
               "minimum": 0,
-              "description": "Number of basic device-policy access levels that explicitly restrict allowed device management levels to managed devices."
+              "description": "Number of basic access levels whose required device policies restrict allowed device management levels to managed devices.",
+              "x-epack-label": "Levels requiring managed devices",
+              "x-epack-summary": "Basic access levels that require a managed device on every request.",
+              "x-epack-method": "Counts the basic access levels whose required device policies set allowedDeviceManagementLevels and leave out NONE and MANAGEMENT_UNSPECIFIED. A device policy is required when its condition is not negated and the level joins its conditions with AND or has only one condition."
             },
             "basic_device_policy_access_level_titles": {
               "type": "array",
-              "items": { "type": "string" },
-              "description": "Titles of basic access levels that include a devicePolicy condition."
+              "items": {
+                "type": "string"
+              },
+              "description": "Titles of basic access levels that include a devicePolicy condition.",
+              "x-epack-label": "Device-policy level titles",
+              "x-epack-summary": "Titles of the basic access levels that carry a device-policy condition."
             },
             "levels": {
               "type": "array",
-              "description": "Per-access-level rows (audit and above): title, custom flag, device-policy summary. Internal adds rule details (IP subnetworks, regions, required access levels, allowed device-management and encryption statuses).",
-              "items": { "type": "object", "additionalProperties": true }
+              "x-epack-level": "audit",
+              "description": "Per-access-level rows (audit and above): title, custom flag, device-policy summary. Internal adds rule details (IP subnetworks, regions, required access levels, allowed device-management and encryption statuses). The device-policy fields other than has_device_policy come from required device policies only. A device policy is required when its condition is not negated and the level joins its conditions with AND or has only one condition.",
+              "x-epack-label": "Access levels",
+              "x-epack-summary": "Per-access-level rows with the device policy each level requires.",
+              "items": {
+                "type": "object",
+                "required": ["title", "custom", "has_device_policy", "requires_screenlock", "requires_admin_approval", "requires_corp_owned", "os_constraint_count"],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "The access level's title, or its resource name when it has no title.",
+                    "x-epack-label": "Level title",
+                    "x-epack-summary": "Display title of the access level."
+                  },
+                  "custom": {
+                    "type": "boolean",
+                    "description": "Whether the access level is a custom CEL level.",
+                    "x-epack-label": "Custom level",
+                    "x-epack-summary": "Whether the access level is a custom CEL level."
+                  },
+                  "has_device_policy": {
+                    "type": "boolean",
+                    "description": "Whether the access level has a devicePolicy condition.",
+                    "x-epack-label": "Has device policy",
+                    "x-epack-summary": "Whether the access level has a device policy condition."
+                  },
+                  "requires_screenlock": {
+                    "type": "boolean",
+                    "description": "Whether a required device policy asks for a screen lock.",
+                    "x-epack-label": "Requires screen lock",
+                    "x-epack-summary": "Whether every request that meets the access level needs a device with a screen lock."
+                  },
+                  "requires_admin_approval": {
+                    "type": "boolean",
+                    "description": "Whether a required device policy asks for a device an admin has approved.",
+                    "x-epack-label": "Requires admin approval",
+                    "x-epack-summary": "Whether every request that meets the access level needs a device an admin has approved."
+                  },
+                  "requires_corp_owned": {
+                    "type": "boolean",
+                    "description": "Whether a required device policy asks for a company-owned device.",
+                    "x-epack-label": "Requires company-owned",
+                    "x-epack-summary": "Whether every request that meets the access level needs a company-owned device."
+                  },
+                  "os_constraint_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Number of operating system constraints in the required device policies.",
+                    "x-epack-label": "OS constraints",
+                    "x-epack-summary": "Operating system constraints, such as a minimum version, in the device policies every request must meet."
+                  },
+                  "allowed_device_management_levels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Device management levels the required device policies allow.",
+                    "x-epack-label": "Allowed management levels",
+                    "x-epack-summary": "Device-management levels the access level accepts on every request, for example BASIC or COMPLETE.",
+                    "x-epack-level": "internal"
+                  },
+                  "allowed_encryption_statuses": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Encryption statuses the required device policies allow.",
+                    "x-epack-label": "Allowed encryption",
+                    "x-epack-summary": "Encryption statuses the access level accepts on every request, for example ENCRYPTED.",
+                    "x-epack-level": "internal"
+                  },
+                  "ip_subnetworks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "IP ranges the access level allows.",
+                    "x-epack-label": "IP subnetworks",
+                    "x-epack-summary": "IP ranges the access level allows.",
+                    "x-epack-level": "internal"
+                  },
+                  "regions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Regions the access level allows.",
+                    "x-epack-label": "Regions",
+                    "x-epack-summary": "Geographic regions the rule allows.",
+                    "x-epack-level": "internal"
+                  },
+                  "required_access_levels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Other access levels this level requires.",
+                    "x-epack-label": "Required access levels",
+                    "x-epack-summary": "Other access levels a request must also meet.",
+                    "x-epack-level": "internal"
+                  }
+                },
+                "additionalProperties": false
+              }
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "x-epack-label": "Access Context Manager",
+          "x-epack-summary": "Access levels in the Access Context Manager policy. Present when organization_id or access_policy is configured and the policy can be read."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Device access",
+      "x-epack-summary": "Context-Aware Access deny events and Access Context Manager settings."
     },
     "groups": {
       "type": "object",
       "description": "Groups surface (audit and above; omitted at trust). Audit: total / admin_created / user_created counts, external_members_allowed count, plus the per-group inventory (email, name, member_count, settings); truncated_inventory / truncated_inventory_dropped report the 10,000-group cap. Internal: per-group member lists (bounded by a 200k total-row cap; truncated_group_memberships flags that cap).",
-      "additionalProperties": true
+      "x-epack-label": "Groups",
+      "x-epack-summary": "Google Groups counts and settings.",
+      "x-epack-level": "audit",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Groups in the tenant.",
+          "x-epack-label": "Total groups",
+          "x-epack-summary": "Groups in the tenant."
+        },
+        "admin_created": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Groups an admin created.",
+          "x-epack-label": "Admin-created groups",
+          "x-epack-summary": "Groups an admin created."
+        },
+        "user_created": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Groups a user created.",
+          "x-epack-label": "User-created groups",
+          "x-epack-summary": "Groups a user created."
+        },
+        "external_members_allowed": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Groups whose settings allow external members. Null when the settings of some groups could not be read.",
+          "x-epack-label": "Groups allowing outsiders",
+          "x-epack-summary": "Groups whose settings allow members from outside the tenant."
+        },
+        "inventory": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["email", "member_count", "admin_created", "allow_external_members"],
+            "properties": {
+              "email": {
+                "type": "string",
+                "description": "The group's email address.",
+                "x-epack-label": "Group email",
+                "x-epack-summary": "Group address."
+              },
+              "name": {
+                "type": "string",
+                "description": "Group name.",
+                "x-epack-label": "Group name",
+                "x-epack-summary": "Display name of the group."
+              },
+              "description": {
+                "type": "string",
+                "description": "Group description.",
+                "x-epack-label": "Group description",
+                "x-epack-summary": "Description of the group."
+              },
+              "member_count": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Direct members of the group.",
+                "x-epack-label": "Members",
+                "x-epack-summary": "Direct members of the group."
+              },
+              "admin_created": {
+                "type": "boolean",
+                "description": "Whether an admin created the group.",
+                "x-epack-label": "Admin created",
+                "x-epack-summary": "Whether an admin created the group."
+              },
+              "allow_external_members": {
+                "type": ["boolean", "null"],
+                "description": "Whether the group settings allow members from outside the tenant. Null when the settings could not be read.",
+                "x-epack-label": "Allows outsiders",
+                "x-epack-summary": "Whether the group's settings allow members from outside the tenant."
+              },
+              "who_can_join": {
+                "type": "string",
+                "description": "Who can join the group.",
+                "x-epack-label": "Who can join",
+                "x-epack-summary": "Join setting, such as ALL_IN_DOMAIN_CAN_JOIN or INVITED_CAN_JOIN."
+              },
+              "who_can_post_message": {
+                "type": "string",
+                "description": "Who can post to the group.",
+                "x-epack-label": "Who can post",
+                "x-epack-summary": "Posting setting, such as ANYONE_CAN_POST."
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["email"],
+                  "properties": {
+                    "email": {
+                      "type": "string",
+                      "description": "The member's email address.",
+                      "x-epack-label": "Member email",
+                      "x-epack-summary": "Email of the group member."
+                    },
+                    "role": {
+                      "type": "string",
+                      "description": "Role in the group, such as OWNER, MANAGER, or MEMBER.",
+                      "x-epack-label": "Member role",
+                      "x-epack-summary": "Role in the group, such as OWNER, MANAGER, or MEMBER."
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Kind of member, such as USER or GROUP.",
+                      "x-epack-label": "Member type",
+                      "x-epack-summary": "Member type, such as USER or GROUP."
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "The member's account status.",
+                      "x-epack-label": "Member status",
+                      "x-epack-summary": "Membership status, for example ACTIVE or SUSPENDED."
+                    },
+                    "delivery_settings": {
+                      "type": "string",
+                      "description": "How the member gets mail sent to the group.",
+                      "x-epack-label": "Delivery setting",
+                      "x-epack-summary": "How the member gets mail sent to the group."
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "description": "Direct members of the group.",
+                "x-epack-label": "Group members",
+                "x-epack-summary": "Member rows for the group.",
+                "x-epack-level": "internal"
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Per-group rows, sorted by member count when the list is capped.",
+          "x-epack-label": "Group inventory",
+          "x-epack-summary": "Per-group rows with member count, settings, and member lists."
+        },
+        "truncated_inventory": {
+          "type": "boolean",
+          "description": "Whether the group list was capped at 10,000 rows.",
+          "x-epack-label": "Group inventory truncated",
+          "x-epack-summary": "Whether the group list was capped at 10,000 rows. The largest groups are kept first."
+        },
+        "truncated_inventory_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Groups left out of the list by the cap.",
+          "x-epack-label": "Group rows dropped",
+          "x-epack-summary": "Groups left out of the list by the cap."
+        },
+        "truncated_group_memberships": {
+          "type": "boolean",
+          "x-epack-level": "internal",
+          "description": "Whether the member lists were capped at 200,000 rows across all groups.",
+          "x-epack-label": "Memberships truncated",
+          "x-epack-summary": "Whether the member lists were capped at 200,000 rows across all groups."
+        }
+      },
+      "additionalProperties": false,
+      "required": ["total", "admin_created", "user_created", "external_members_allowed"]
     },
     "org_units": {
       "type": "object",
       "description": "Org-unit surface (audit and above; omitted at trust). Audit: total, max_depth, and the per-OU inventory with user_count and the block_inheritance policy-override flag.",
-      "additionalProperties": true
+      "x-epack-label": "Org units",
+      "x-epack-summary": "The org unit tree. Policies, including 2-step verification enforcement, apply by org unit.",
+      "x-epack-level": "audit",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "x-epack-rollup": {
+            "rows": "inventory",
+            "as": "count"
+          },
+          "description": "Org units in the tenant.",
+          "x-epack-label": "Total org units",
+          "x-epack-summary": "Org units in the tenant."
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Deepest nesting of an org unit below the root, which is depth 0.",
+          "x-epack-label": "Max depth",
+          "x-epack-summary": "Deepest nesting of an org unit below the root. An org unit directly under the root is at depth 1."
+        },
+        "inventory": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "user_count", "block_inheritance"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The org unit's path.",
+                "x-epack-label": "Path",
+                "x-epack-summary": "Full org-unit path."
+              },
+              "parent_path": {
+                "type": "string",
+                "description": "The parent org unit's path.",
+                "x-epack-label": "Parent path",
+                "x-epack-summary": "Path of the parent org unit."
+              },
+              "description": {
+                "type": "string",
+                "description": "Org unit description.",
+                "x-epack-label": "Description",
+                "x-epack-summary": "Description of the org unit."
+              },
+              "user_count": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "Users in the org unit, from the live Directory scan. Null when the scan failed.",
+                "x-epack-label": "Users in OU",
+                "x-epack-summary": "Users in any state placed directly in the org unit, from the live Directory scan."
+              },
+              "block_inheritance": {
+                "type": "boolean",
+                "description": "Whether the org unit blocks settings inherited from its parent.",
+                "x-epack-label": "Blocks inheritance",
+                "x-epack-summary": "Whether the org unit blocks settings inherited from its parent."
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Per-org-unit rows, sorted by path.",
+          "x-epack-label": "Org-unit inventory",
+          "x-epack-summary": "Per-org-unit rows with path, user count, and the inheritance setting."
+        }
+      },
+      "additionalProperties": false,
+      "required": ["total", "max_depth"]
     },
     "endpoint": {
       "type": "object",
       "description": "Managed-device surface (mobile + Chrome OS; audit and above, omitted at trust). Audit: counts by OS, not_synced_30d, and per-OS compliant / non-compliant breakdowns. Internal: per-device rows (no serial numbers or IMEIs).",
-      "additionalProperties": true
+      "x-epack-label": "Managed devices",
+      "x-epack-summary": "Managed mobile and Chrome OS devices. Serial numbers and IMEIs are never collected.",
+      "x-epack-level": "audit",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Mobile and Chrome OS devices the tenant manages.",
+          "x-epack-label": "Total devices",
+          "x-epack-summary": "Managed mobile and Chrome OS devices."
+        },
+        "managed_by_os": {
+          "type": "object",
+          "description": "Managed devices by operating system.",
+          "x-epack-label": "Devices by OS",
+          "x-epack-summary": "Managed devices by operating system.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "x-epack-label": "Devices on this OS",
+            "x-epack-summary": "Managed devices running this operating system."
+          }
+        },
+        "not_synced_30d": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Managed devices that have not synced in the 30 days before the run, or have never synced.",
+          "x-epack-label": "Devices not synced",
+          "x-epack-summary": "Managed devices that have not synced in the 30 days before the run, or have never synced."
+        },
+        "compliant_by_os": {
+          "type": "object",
+          "description": "Managed devices that count as compliant, by operating system. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active.",
+          "x-epack-label": "Compliant by OS",
+          "x-epack-summary": "Managed devices that count as compliant, by operating system.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "x-epack-label": "Compliant devices on this OS",
+            "x-epack-summary": "Managed devices on this operating system that count as compliant."
+          }
+        },
+        "non_compliant_by_os": {
+          "type": "object",
+          "description": "Managed devices that do not count as compliant, by operating system.",
+          "x-epack-label": "Non-compliant by OS",
+          "x-epack-summary": "Managed devices that do not count as compliant, by operating system.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "x-epack-label": "Non-compliant devices on this OS",
+            "x-epack-summary": "Managed devices on this operating system that do not count as compliant."
+          }
+        },
+        "inventory": {
+          "type": "array",
+          "x-epack-level": "internal",
+          "description": "Per-device rows, sorted by last sync when the list is capped. Serial numbers and IMEIs are never collected.",
+          "x-epack-label": "Device inventory",
+          "x-epack-summary": "Per-device rows with platform, operating system, owner, and device state. Serial numbers and IMEIs are never collected.",
+          "items": {
+            "type": "object",
+            "required": ["platform", "os", "compliant", "encrypted", "screen_lock_enforced"],
+            "properties": {
+              "platform": {
+                "type": "string",
+                "description": "Device platform, mobile or Chrome OS.",
+                "x-epack-label": "Platform",
+                "x-epack-summary": "Device platform, MOBILE or CHROME_OS."
+              },
+              "os": {
+                "type": "string",
+                "description": "Operating system.",
+                "x-epack-label": "OS",
+                "x-epack-summary": "Operating system of the device."
+              },
+              "os_version": {
+                "type": "string",
+                "description": "Operating system version.",
+                "x-epack-label": "OS version",
+                "x-epack-summary": "Operating system version."
+              },
+              "model": {
+                "type": "string",
+                "description": "Device model.",
+                "x-epack-label": "Model",
+                "x-epack-summary": "Device model."
+              },
+              "owner_email": {
+                "type": "string",
+                "description": "The device owner's email address. For a Chrome OS device it is the annotatedUser an admin set, kept only when it is an email address.",
+                "x-epack-label": "Owner",
+                "x-epack-summary": "Email of the device owner. A Chrome OS device has one only when an admin noted an email address as its user."
+              },
+              "compliant": {
+                "type": "boolean",
+                "description": "Whether the device counts as compliant. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active.",
+                "x-epack-label": "Compliant",
+                "x-epack-summary": "Whether the device counts as compliant. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active."
+              },
+              "encrypted": {
+                "type": "boolean",
+                "description": "Whether the device is encrypted.",
+                "x-epack-label": "Encrypted",
+                "x-epack-summary": "Whether the device's storage is encrypted. It is true for every Chrome OS device, since Chrome OS storage is always encrypted."
+              },
+              "screen_lock_enforced": {
+                "type": "boolean",
+                "description": "Whether the device enforces a screen lock.",
+                "x-epack-label": "Screen lock enforced",
+                "x-epack-summary": "Whether a mobile device has a screen lock password set. It is false for every Chrome OS device."
+              },
+              "last_sync": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the device last synced.",
+                "x-epack-label": "Last sync",
+                "x-epack-summary": "Timestamp of the device's last sync."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "truncated_devices": {
+          "type": "boolean",
+          "x-epack-level": "internal",
+          "description": "Whether the device list was capped at 5,000 rows.",
+          "x-epack-label": "Device inventory truncated",
+          "x-epack-summary": "Whether the device list was capped at 5,000 rows. The most recently synced devices are kept first."
+        },
+        "truncated_devices_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "x-epack-level": "internal",
+          "description": "Devices left out of the list by the cap.",
+          "x-epack-label": "Device rows dropped",
+          "x-epack-summary": "Devices left out of the list by the cap."
+        }
+      },
+      "additionalProperties": false,
+      "required": ["total", "managed_by_os", "not_synced_30d"]
     },
     "drive_external_sharing": {
       "type": "object",
       "description": "Drive external-sharing audit. Audit: external-share and public-on-web event counts over 30 days. Internal: an event slice over 7 days with file_id, sharer_email, recipient_domain (domain only, never the full address), and target_role.",
-      "additionalProperties": true
+      "x-epack-label": "Drive external sharing",
+      "x-epack-summary": "Drive sharing with outside addresses and with the web. File names and contents are never collected.",
+      "x-epack-level": "audit",
+      "properties": {
+        "count_window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days of Drive audit history the counts cover.",
+          "x-epack-label": "Count window",
+          "x-epack-summary": "Days of Drive audit history the counts cover. It is 30."
+        },
+        "external_share_events": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Drive events in the count window that gave an address or a whole domain outside the primary domain access to a file. An event that removed access does not count. Null when the primary domain could not be read.",
+          "x-epack-label": "External shares",
+          "x-epack-summary": "Drive events in the count window that gave an address or a domain outside the primary domain access to a file."
+        },
+        "public_on_web_events": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Drive events in the count window that made a file public or open to anyone with the link.",
+          "x-epack-label": "Public-on-web shares",
+          "x-epack-summary": "Drive events in the count window that made a file public or open to anyone with the link."
+        },
+        "event_window_days": {
+          "type": "integer",
+          "x-epack-level": "internal",
+          "description": "Days of Drive audit history the event list covers.",
+          "x-epack-label": "Event window",
+          "x-epack-summary": "Days of Drive audit history the event list covers. It is 7.",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "x-epack-level": "internal",
+          "description": "Drive sharing events in the event window, newest first when the list is capped. File names and contents are never collected.",
+          "x-epack-label": "Sharing events",
+          "x-epack-summary": "Per-event rows. Recipients appear as an email domain, and file names are never collected.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "time": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the event happened.",
+                "x-epack-label": "Event time",
+                "x-epack-summary": "Timestamp of the share event."
+              },
+              "file_id": {
+                "type": "string",
+                "description": "The shared file's ID.",
+                "x-epack-label": "File ID",
+                "x-epack-summary": "Drive file ID. File names and contents are never collected."
+              },
+              "sharer_email": {
+                "type": "string",
+                "description": "Email address of the user who shared the file.",
+                "x-epack-label": "Shared by",
+                "x-epack-summary": "Email address of the user who shared the file."
+              },
+              "recipient_domain": {
+                "type": "string",
+                "description": "The recipient's email domain, or the domain itself when the file was shared with a whole domain. The full address is never collected.",
+                "x-epack-label": "Recipient domain",
+                "x-epack-summary": "Email domain of the recipient, or the domain a file was shared with. The full address is never collected."
+              },
+              "target_role": {
+                "type": "string",
+                "description": "Access the share grants, such as reader or writer.",
+                "x-epack-label": "Granted role",
+                "x-epack-summary": "Access the share grants, such as reader, commenter, or writer."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "truncated_events": {
+          "type": "boolean",
+          "x-epack-level": "internal",
+          "description": "Whether the event list was capped at 5,000 rows.",
+          "x-epack-label": "Sharing events truncated",
+          "x-epack-summary": "Whether the event list was capped at 5,000 rows. The newest events are kept first."
+        },
+        "truncated_events_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "x-epack-level": "internal",
+          "description": "Events left out of the list by the cap.",
+          "x-epack-label": "Sharing rows dropped",
+          "x-epack-summary": "Events left out of the list by the cap."
+        }
+      },
+      "additionalProperties": false,
+      "required": ["count_window_days", "external_share_events", "public_on_web_events"]
     },
     "admin_audit_log": {
       "type": "object",
       "description": "Security-relevant admin actions over 7 days. Audit: counts by category. Internal: the event slice (no debug-context payloads).",
-      "additionalProperties": true
+      "x-epack-label": "Admin actions",
+      "x-epack-summary": "Security-relevant admin actions over the past 7 days.",
+      "x-epack-level": "audit",
+      "properties": {
+        "window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days of admin audit history the counts cover.",
+          "x-epack-label": "Window",
+          "x-epack-summary": "Days of admin audit history the counts cover. It is 7."
+        },
+        "counts_by_category": {
+          "type": "object",
+          "description": "Security-relevant admin actions in the window, by category.",
+          "x-epack-label": "Actions by category",
+          "x-epack-summary": "Security-relevant admin actions in the window, by category.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "x-epack-label": "Actions in this category",
+            "x-epack-summary": "Security-relevant admin actions in this category in the window."
+          }
+        },
+        "events": {
+          "type": "array",
+          "x-epack-level": "internal",
+          "description": "Security-relevant admin actions in the window, newest first when the list is capped.",
+          "x-epack-label": "Admin events",
+          "x-epack-summary": "Per-action rows. Event bodies and debug details are never collected.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "time": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the action happened.",
+                "x-epack-label": "Event time",
+                "x-epack-summary": "Timestamp of the admin action."
+              },
+              "actor_email": {
+                "type": "string",
+                "description": "Email address of the admin who acted.",
+                "x-epack-label": "Actor",
+                "x-epack-summary": "Email of the admin who performed the action."
+              },
+              "name": {
+                "type": "string",
+                "description": "Google's event name for the action.",
+                "x-epack-label": "Action",
+                "x-epack-summary": "Google's name for the action, such as GRANT_ADMIN_PRIVILEGE."
+              },
+              "category": {
+                "type": "string",
+                "description": "Category the action is counted under.",
+                "x-epack-label": "Category",
+                "x-epack-summary": "Category the action falls under."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "truncated_events": {
+          "type": "boolean",
+          "x-epack-level": "internal",
+          "description": "Whether the event list was capped at 5,000 rows.",
+          "x-epack-label": "Admin events truncated",
+          "x-epack-summary": "Whether the event list was capped at 5,000 rows. The newest events are kept first."
+        },
+        "truncated_events_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "x-epack-level": "internal",
+          "description": "Events left out of the list by the cap.",
+          "x-epack-label": "Admin rows dropped",
+          "x-epack-summary": "Events left out of the list by the cap."
+        }
+      },
+      "additionalProperties": false,
+      "required": ["window_days", "counts_by_category"]
     },
     "login_audit_log": {
       "type": "object",
       "description": "Suspicious / failed logins over 7 days. Audit: counts. Internal: the event slice with IP for forensic correlation (no geolocation).",
-      "additionalProperties": true
+      "x-epack-label": "Login alerts",
+      "x-epack-summary": "Failed and suspicious sign-ins and leaked-password events over the past 7 days.",
+      "x-epack-level": "audit",
+      "properties": {
+        "window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days of login audit history the counts cover.",
+          "x-epack-label": "Window",
+          "x-epack-summary": "Days of login audit history the counts cover. It is 7."
+        },
+        "suspicious_logins": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sign-ins Google flagged as suspicious in the window.",
+          "x-epack-label": "Suspicious logins",
+          "x-epack-summary": "Sign-ins marked suspicious in the login audit log in the window."
+        },
+        "failed_logins": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Failed sign-ins in the window.",
+          "x-epack-label": "Failed logins",
+          "x-epack-summary": "Failed sign-ins in the window. A spike can mean password spraying or a brute-force attempt."
+        },
+        "password_leak_events": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Accounts disabled in the window after their password was found in a leak.",
+          "x-epack-label": "Leaked-password alerts",
+          "x-epack-summary": "Accounts disabled in the window after their password was found in a leak."
+        },
+        "events": {
+          "type": "array",
+          "x-epack-level": "internal",
+          "description": "Suspicious sign-ins, failed sign-ins, and leaked-password events in the window, newest first when the list is capped.",
+          "x-epack-label": "Login events",
+          "x-epack-summary": "Per-event rows for security-relevant logins.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "time": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the event happened.",
+                "x-epack-label": "Event time",
+                "x-epack-summary": "Timestamp of the login event."
+              },
+              "actor_email": {
+                "type": "string",
+                "description": "Email address of the user signing in.",
+                "x-epack-label": "Actor",
+                "x-epack-summary": "Email address of the account the event is about."
+              },
+              "ip_address": {
+                "type": "string",
+                "description": "IP address the sign-in came from.",
+                "x-epack-label": "IP address",
+                "x-epack-summary": "IP address the sign-in came from. No location is collected."
+              },
+              "name": {
+                "type": "string",
+                "description": "Google's event name.",
+                "x-epack-label": "Event",
+                "x-epack-summary": "Event type, such as login_failure or suspicious_login."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "truncated_events": {
+          "type": "boolean",
+          "x-epack-level": "internal",
+          "description": "Whether the event list was capped at 5,000 rows.",
+          "x-epack-label": "Login events truncated",
+          "x-epack-summary": "Whether the event list was capped at 5,000 rows. The newest events are kept first."
+        },
+        "truncated_events_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "x-epack-level": "internal",
+          "description": "Events left out of the list by the cap.",
+          "x-epack-label": "Login rows dropped",
+          "x-epack-summary": "Events left out of the list by the cap."
+        }
+      },
+      "additionalProperties": false,
+      "required": ["window_days", "suspicious_logins", "failed_logins", "password_leak_events"]
     },
     "oauth_tokens": {
       "type": "object",
-      "description": "OAuth token audit over 7 days (audit and above; omitted at trust). Audit: issuance counts plus counts by app and by scope sensitivity. Internal: per-token grants with scopes (token values are never available via the API).",
-      "additionalProperties": true
+      "description": "OAuth token audit over 7 days (internal only; omitted at trust and audit): issuance counts, counts by app and by scope sensitivity, and per-token grants with scopes (token values are never available via the API).",
+      "x-epack-label": "App authorizations",
+      "x-epack-summary": "OAuth grants users made to apps over the past 7 days. Token values are never collected.",
+      "x-epack-level": "internal",
+      "additionalProperties": false,
+      "properties": {
+        "window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days of token audit history the counts cover.",
+          "x-epack-label": "Window",
+          "x-epack-summary": "Days of token audit history the counts cover. It is 7."
+        },
+        "tokens_issued": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "OAuth grants users made to apps in the window.",
+          "x-epack-label": "Tokens issued",
+          "x-epack-summary": "OAuth grants users made to apps in the window."
+        },
+        "apps_with_new_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Apps, by OAuth client ID, with at least one grant in the window.",
+          "x-epack-label": "Apps with new grants",
+          "x-epack-summary": "Apps with at least one grant in the window."
+        },
+        "counts_by_app": {
+          "type": "object",
+          "description": "Grants in the window, by app name or, when the app has none, its client ID.",
+          "x-epack-label": "Grants by app",
+          "x-epack-summary": "OAuth grants in the window, by app.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "x-epack-label": "Grants to this app",
+            "x-epack-summary": "OAuth grants to this app in the window."
+          }
+        },
+        "counts_by_scope_sensitivity": {
+          "type": "object",
+          "description": "Grants in the window, by the most sensitive scope each grant includes, which is low, medium, or high. A scope that is not known to be read-only or sign-in only counts as high.",
+          "x-epack-label": "Grants by sensitivity",
+          "x-epack-summary": "OAuth grants in the window, by the most sensitive scope in each grant. Low covers sign-in and profile scopes, and medium covers read-only access. High covers every other scope, such as access that can change mail, Drive, calendar, or admin data.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "x-epack-label": "Grants at this sensitivity",
+            "x-epack-summary": "OAuth grants in the window whose most sensitive scope is at this level."
+          }
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "user_email": {
+                "type": "string",
+                "description": "Email address of the user who granted access.",
+                "x-epack-label": "User",
+                "x-epack-summary": "Email of the user who authorized the app."
+              },
+              "client_id": {
+                "type": "string",
+                "description": "The app's OAuth client ID.",
+                "x-epack-label": "Client ID",
+                "x-epack-summary": "OAuth client ID of the app."
+              },
+              "display_name": {
+                "type": "string",
+                "description": "The app's name.",
+                "x-epack-label": "App name",
+                "x-epack-summary": "Display name of the authorized app."
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "OAuth scopes the grant includes.",
+                "x-epack-label": "Scopes",
+                "x-epack-summary": "OAuth scopes the user granted to the app."
+              },
+              "granted_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the grant happened.",
+                "x-epack-label": "Granted",
+                "x-epack-summary": "Timestamp of the grant."
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "OAuth grants in the window, newest first when the list is capped. Token values are never collected.",
+          "x-epack-label": "Token grants",
+          "x-epack-summary": "Per-grant rows with the user, the app, and the scopes granted."
+        },
+        "truncated_tokens": {
+          "type": "boolean",
+          "description": "Whether the grant list was capped at 5,000 rows.",
+          "x-epack-label": "Token list truncated",
+          "x-epack-summary": "Whether the grant list was capped at 5,000 rows. The newest grants are kept first."
+        },
+        "truncated_tokens_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Grants left out of the list by the cap.",
+          "x-epack-label": "Token rows dropped",
+          "x-epack-summary": "Grants left out of the list by the cap."
+        }
+      },
+      "required": ["window_days", "tokens_issued", "apps_with_new_tokens"]
     },
     "domain_settings": {
       "type": "object",
       "description": "Domain + SSO (audit and above; omitted at trust). Audit: sso_configured flag, SAML-profile and verified-domain counts, plus per-profile and per-domain inventories. Internal: SSO service host (host only; never the full URL, signing certs, or metadata XML).",
-      "additionalProperties": true
+      "x-epack-label": "Domains and SSO",
+      "x-epack-summary": "Domains and SAML SSO profiles. Signing certificates, SAML metadata, and full SSO URLs are never collected.",
+      "x-epack-level": "audit",
+      "properties": {
+        "sso_configured": {
+          "type": ["boolean", "null"],
+          "description": "Whether the tenant has a SAML SSO profile. Null when the profiles could not be read.",
+          "x-epack-label": "SSO configured",
+          "x-epack-summary": "Whether the tenant has at least one SAML SSO profile."
+        },
+        "saml_profile_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "x-epack-rollup": {
+            "rows": "saml_profiles",
+            "as": "count"
+          },
+          "description": "SAML SSO profiles the tenant has.",
+          "x-epack-label": "SAML profiles",
+          "x-epack-summary": "SAML SSO profiles the tenant has. Different org units or groups can sign in through different identity providers."
+        },
+        "verified_domain_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "x-epack-rollup": {
+            "rows": "domains",
+            "where": "/verified",
+            "as": "count"
+          },
+          "description": "Domains the tenant has verified.",
+          "x-epack-label": "Verified domains",
+          "x-epack-summary": "Domains the tenant has verified."
+        },
+        "primary_domain": {
+          "type": "string",
+          "description": "The tenant's primary domain, from the domain list.",
+          "x-epack-label": "Primary domain",
+          "x-epack-summary": "The tenant's primary domain."
+        },
+        "saml_profiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "display_name": {
+                "type": "string",
+                "description": "Profile name.",
+                "x-epack-label": "Profile name",
+                "x-epack-summary": "Display name of the SSO profile."
+              },
+              "idp_entity_id": {
+                "type": "string",
+                "description": "The identity provider's entity ID.",
+                "x-epack-label": "IdP entity ID",
+                "x-epack-summary": "Entity ID of the identity provider the profile trusts."
+              },
+              "sso_service_host": {
+                "type": "string",
+                "description": "Host of the identity provider's sign-in URL. The full URL is never collected.",
+                "x-epack-label": "SSO host",
+                "x-epack-summary": "Host of the identity provider's sign-in URL. The full URL, certificates, and metadata are never collected.",
+                "x-epack-level": "internal"
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "SAML SSO profiles the tenant has.",
+          "x-epack-label": "SAML profile inventory",
+          "x-epack-summary": "Per-profile rows with the name, identity provider entity ID, and sign-in host."
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["domain_name", "verified", "primary"],
+            "properties": {
+              "domain_name": {
+                "type": "string",
+                "description": "Domain name.",
+                "x-epack-label": "Domain",
+                "x-epack-summary": "Domain name registered to the tenant."
+              },
+              "verified": {
+                "type": "boolean",
+                "description": "Whether the domain is verified.",
+                "x-epack-label": "Verified",
+                "x-epack-summary": "Whether the tenant has verified the domain."
+              },
+              "primary": {
+                "type": "boolean",
+                "description": "Whether the domain is the tenant's primary domain.",
+                "x-epack-label": "Primary",
+                "x-epack-summary": "Whether the domain is the tenant's primary domain."
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Domains the tenant has added.",
+          "x-epack-label": "Domain inventory",
+          "x-epack-summary": "Per-domain rows with the name, verification, and primary flag."
+        }
+      },
+      "additionalProperties": false
     },
     "vault": {
       "type": "object",
-      "description": "Vault eDiscovery (audit and above; omitted at trust). Audit: licensed flag, matter / hold counts, and per-matter summaries. Internal: per-hold metadata (never the search query or hold contents). Absent license degrades to licensed=false.",
-      "additionalProperties": true
+      "description": "Vault eDiscovery (audit and above; omitted at trust). Audit: licensed flag, matter / hold counts, and per-matter summaries. Internal: per-hold metadata (never the search query or hold contents). On a tenant without a Vault license, licensed is false and the counts are null.",
+      "x-epack-label": "Vault eDiscovery",
+      "x-epack-summary": "Vault matters and legal holds. Hold search queries and contents are never collected.",
+      "x-epack-level": "audit",
+      "properties": {
+        "licensed": {
+          "type": "boolean",
+          "description": "Whether the tenant's edition includes Vault.",
+          "x-epack-label": "Vault licensed",
+          "x-epack-summary": "Whether the tenant's edition includes Google Vault. Without it, the matter and hold counts are null."
+        },
+        "matters_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "x-epack-rollup": {
+            "rows": "matters",
+            "as": "count"
+          },
+          "description": "Vault matters in the tenant. Null when the tenant has no Vault license.",
+          "x-epack-label": "Matters",
+          "x-epack-summary": "Vault matters in the tenant. A matter groups the holds, searches, and exports for one case."
+        },
+        "holds_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "x-epack-rollup": {
+            "rows": "holds",
+            "as": "count"
+          },
+          "description": "Legal holds across all matters. Null when the tenant has no Vault license.",
+          "x-epack-label": "Legal holds",
+          "x-epack-summary": "Legal holds across all matters. A hold keeps data from deletion until someone removes the hold."
+        },
+        "matters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["matter_id", "hold_count"],
+            "properties": {
+              "matter_id": {
+                "type": "string",
+                "description": "The matter's ID.",
+                "x-epack-label": "Matter ID",
+                "x-epack-summary": "Matter ID."
+              },
+              "name": {
+                "type": "string",
+                "description": "Matter name.",
+                "x-epack-label": "Matter name",
+                "x-epack-summary": "Name of the matter."
+              },
+              "state": {
+                "type": "string",
+                "description": "Matter state, such as OPEN or CLOSED.",
+                "x-epack-label": "State",
+                "x-epack-summary": "Matter lifecycle state, for example OPEN, CLOSED, or DELETED."
+              },
+              "hold_count": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "Legal holds in the matter. Null when its holds could not be read.",
+                "x-epack-label": "Holds in matter",
+                "x-epack-summary": "Legal holds in this matter."
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Per-matter rows.",
+          "x-epack-label": "Matter inventory",
+          "x-epack-summary": "Per-matter rows with the name, state, and hold count."
+        },
+        "holds": {
+          "type": "array",
+          "x-epack-level": "internal",
+          "description": "Per-hold rows. The search query and hold contents are never collected.",
+          "x-epack-label": "Hold inventory",
+          "x-epack-summary": "Per-hold rows with the service and scope of each hold. The search query and hold contents are never collected.",
+          "items": {
+            "type": "object",
+            "required": ["hold_id", "matter_id", "account_count", "org_unit_scoped"],
+            "properties": {
+              "hold_id": {
+                "type": "string",
+                "description": "The hold's ID.",
+                "x-epack-label": "Hold ID",
+                "x-epack-summary": "Hold ID."
+              },
+              "matter_id": {
+                "type": "string",
+                "description": "ID of the matter the hold belongs to.",
+                "x-epack-label": "Matter ID",
+                "x-epack-summary": "ID of the matter the hold belongs to."
+              },
+              "corpus": {
+                "type": "string",
+                "description": "Service the hold covers, such as MAIL or DRIVE.",
+                "x-epack-label": "Corpus",
+                "x-epack-summary": "Data type the hold preserves, for example MAIL, DRIVE, or CHAT."
+              },
+              "account_count": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Accounts the hold names.",
+                "x-epack-label": "Accounts held",
+                "x-epack-summary": "Accounts the hold names. It is 0 for a hold on an org unit."
+              },
+              "org_unit_scoped": {
+                "type": "boolean",
+                "description": "Whether the hold covers an org unit instead of named accounts.",
+                "x-epack-label": "Org-unit scoped",
+                "x-epack-summary": "Whether the hold covers an org unit instead of named accounts."
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the hold last changed.",
+                "x-epack-label": "Updated",
+                "x-epack-summary": "Timestamp the hold was last modified."
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": ["licensed", "matters_count", "holds_count"]
     },
     "diagnostics": {
       "type": "object",
       "properties": {
         "permission_errors": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Surfaces skipped because an OAuth scope or admin role is missing (a permission the customer can grant)."
+          "items": {
+            "type": "string"
+          },
+          "description": "Surfaces skipped because an OAuth scope or admin role is missing (a permission the customer can grant).",
+          "x-epack-label": "Permission gaps",
+          "x-epack-summary": "Surfaces skipped because an OAuth scope or admin role is missing. Granting it fills the gap."
         },
         "warnings": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Informational warnings about data gaps or caveats (licensing, report lag, truncation)."
+          "items": {
+            "type": "string"
+          },
+          "description": "Informational warnings about data gaps or caveats (licensing, report lag, truncation).",
+          "x-epack-label": "Warnings",
+          "x-epack-summary": "Notes on caveats, such as usage report lag or a capped list."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-epack-label": "Diagnostics",
+      "x-epack-summary": "Permission gaps and warnings from the run."
     }
   },
   "additionalProperties": false
