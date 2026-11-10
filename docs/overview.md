@@ -89,6 +89,8 @@ A value the collector could not read is `null` in the detailed artifact, or abse
 }
 ```
 
+`customer_id`, `access_policy_name`, and `access_policy_parent` are written from the `audit` level. A trust run leaves them out.
+
 ### Normalized IDP Posture Artifact
 
 ```json

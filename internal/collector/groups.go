@@ -179,6 +179,6 @@ func (c *Collector) warnSurfaceScan(surface, missingScope, requiredRole string, 
 	case isRoleInsufficient(err):
 		c.recordRoleInsufficient(surface, requiredRole)
 	default:
-		c.warn("surface %s: scan failed: %v", surface, err)
+		c.warn("surface %s: scan failed: %s", surface, c.errorText(err))
 	}
 }

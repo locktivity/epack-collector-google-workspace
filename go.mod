@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.10
 
 require (
-	github.com/locktivity/epack v0.10.0
+	github.com/locktivity/epack v0.10.5
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.264.0
 )

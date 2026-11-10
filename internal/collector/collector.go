@@ -21,6 +21,7 @@ type Collector struct {
 	client           googleworkspace.Client
 	config           Config
 	now              func() time.Time
+	level            componentsdk.Level
 	warnings         []string
 	permissionErrors []string
 	gaps             *gapLog
@@ -77,6 +78,30 @@ func (c *Collector) permissionError(format string, args ...interface{}) {
 	c.permissionErrors = append(c.permissionErrors, fmt.Sprintf(format, args...))
 }
 
+// audit reports whether the run writes the customer's own IDs, which it does
+// from the audit level.
+func (c *Collector) audit() bool { return c.level.AtLeast(componentsdk.LevelAudit) }
+
+// named is how diagnostics text names one of the customer's own resources,
+// such as the customer or a Cloud organization: by id from the audit level,
+// and as name below it.
+func (c *Collector) named(id, name string) string {
+	if c.audit() {
+		return id
+	}
+	return name
+}
+
+// errorText is how diagnostics text gives err: its message from the audit
+// level, and its code below it. Google's messages and the URLs in them can
+// name the customer, the Cloud organization, or an access policy.
+func (c *Collector) errorText(err error) string {
+	if c.audit() {
+		return err.Error()
+	}
+	return string(componentsdk.Classify(err))
+}
+
 func (c *Collector) diagnostics() *Diagnostics {
 	if len(c.warnings) == 0 && len(c.permissionErrors) == 0 {
 		return nil
@@ -120,6 +145,7 @@ func (c *Collector) customerKey() string {
 // not read is left out of the posture with a gap in config.Recorder.
 func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*OrgPosture, error) {
 	customerKey := c.customerKey()
+	c.level = level
 	c.warnings = nil
 	c.permissionErrors = nil
 	c.gaps = newGapLog(c.config.Recorder)
@@ -189,7 +215,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		acm, err := c.scanAccessContextManager(ctx, scope)
 		switch {
 		case err != nil:
-			c.warn("access context manager scan failed; config enrichment omitted: %v", err)
+			c.warn("access context manager scan failed; config enrichment omitted: %s", c.errorText(err))
 			c.gaps.leaveOut(failed(err), "/device_access/access_context_manager")
 		case acm != nil:
 			posture.DeviceAccess.AccessContextManager = acm
@@ -240,23 +266,33 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 // resolveCustomer reads the tenant record into posture. When it cannot be
 // read, the customer ID, the primary domain, and what depends on the domain
-// are left out, and scope keeps the customer key.
+// are left out, and scope keeps the customer key. The customer ID is written
+// from the audit level, so below it the run records no gap for it.
 func (c *Collector) resolveCustomer(ctx context.Context, posture *OrgPosture, scope *scanScope) {
+	posture.CustomerID.Write = c.audit()
 	customer, err := c.client.GetCustomer(ctx, scope.customerKey)
 	if err != nil {
 		c.warnSurfaceScan("customer", "admin.directory.customer.readonly", "Super Admin", err)
-		c.gaps.leaveOut(failed(err), "/customer_id", "/org_domain")
+		if c.audit() {
+			c.gaps.leaveOut(failed(err), "/customer_id")
+		}
+		c.gaps.leaveOut(failed(err), "/org_domain")
 		return
 	}
+	customerName := c.named("customer "+scope.customerKey, "the customer")
 	if customer.ID == "" {
-		c.warn("customer %s did not return a customer ID", scope.customerKey)
-		c.gaps.leaveOut(failed(invalidResponse("customer %s did not return a customer ID", scope.customerKey)), "/customer_id")
+		c.warn("%s did not return a customer ID", customerName)
+		if c.audit() {
+			c.gaps.leaveOut(failed(invalidResponse("customer %s did not return a customer ID", scope.customerKey)), "/customer_id")
+		}
 	} else {
-		posture.CustomerID = &customer.ID
 		scope.customerID = customer.ID
+		if c.audit() {
+			posture.CustomerID.Value = &customer.ID
+		}
 	}
 	if customer.PrimaryDomain == "" {
-		c.warn("customer %s did not return a primary domain", scope.customerKey)
+		c.warn("%s did not return a primary domain", customerName)
 		c.gaps.leaveOut(failed(invalidResponse("customer %s did not return a primary domain", scope.customerKey)), "/org_domain")
 	} else {
 		posture.OrgDomain = &customer.PrimaryDomain
@@ -645,13 +681,14 @@ func (c *Collector) scanAccessContextManager(ctx context.Context, scope scanScop
 		return nil, err
 	}
 
-	summary := &AccessContextManagerMetrics{
-		AccessPolicyName:   policy.Name,
-		AccessPolicyParent: policy.Parent,
-	}
-
 	collectLevels := scope.level.AtLeast(componentsdk.LevelAudit)
 	includeRuleDetails := scope.level.AtLeast(componentsdk.LevelInternal)
+
+	summary := &AccessContextManagerMetrics{}
+	if collectLevels {
+		summary.AccessPolicyName = policy.Name
+		summary.AccessPolicyParent = policy.Parent
+	}
 
 	err = c.client.ListAccessLevels(ctx, policy.Name, func(levels []googleworkspace.AccessLevel) error {
 		for _, lvl := range levels {
@@ -670,7 +707,7 @@ func (c *Collector) scanAccessContextManager(ctx context.Context, scope scanScop
 			}
 
 			summary.BasicDevicePolicyAccessLevelsCount++
-			summary.BasicDevicePolicyAccessLevelTitles = append(summary.BasicDevicePolicyAccessLevelTitles, accessLevelDisplayName(lvl))
+			summary.BasicDevicePolicyAccessLevelTitles = append(summary.BasicDevicePolicyAccessLevelTitles, accessLevelDisplayName(lvl, collectLevels))
 			if levelExplicitlyRequiresManagedDevice(lvl) {
 				summary.BasicManagedDeviceAccessLevelsCount++
 			}
@@ -693,7 +730,7 @@ func (c *Collector) scanAccessContextManager(ctx context.Context, scope scanScop
 // and device management / encryption status lists.
 func buildAccessLevelSummary(lvl googleworkspace.AccessLevel, includeRuleDetails bool) AccessLevelSummary {
 	row := AccessLevelSummary{
-		Title:                 accessLevelDisplayName(lvl),
+		Title:                 accessLevelDisplayName(lvl, true),
 		Custom:                lvl.Custom,
 		HasDevicePolicy:       lvl.HasDevicePolicy,
 		RequiresScreenlock:    lvl.RequiresScreenlock,
@@ -728,8 +765,9 @@ func (c *Collector) resolveAccessPolicy(ctx context.Context) (googleworkspace.Ac
 	if err != nil {
 		return googleworkspace.AccessPolicy{}, false, err
 	}
+	organization := c.named(parent, "the configured organization")
 	if len(policies) == 0 {
-		c.warn("no access context manager policy found for %s; config enrichment omitted", parent)
+		c.warn("no access context manager policy found for %s; config enrichment omitted", organization)
 		return googleworkspace.AccessPolicy{}, false, nil
 	}
 
@@ -737,7 +775,7 @@ func (c *Collector) resolveAccessPolicy(ctx context.Context) (googleworkspace.Ac
 		return strings.Compare(a.Name, b.Name)
 	})
 	if len(policies) > 1 {
-		c.warn("multiple access context manager policies found for %s; using %s", parent, policies[0].Name)
+		c.warn("multiple access context manager policies found for %s; using %s", organization, c.named(policies[0].Name, "the first by name"))
 	}
 
 	return policies[0], true, nil
@@ -765,11 +803,17 @@ func normalizeAccessPolicyName(raw string) string {
 	return "accessPolicies/" + value
 }
 
-func accessLevelDisplayName(level googleworkspace.AccessLevel) string {
+// accessLevelDisplayName is the level's title. A level with none goes by its
+// resource name from the audit level, and below it by the name's last
+// segment, since the resource name holds the access policy's number.
+func accessLevelDisplayName(level googleworkspace.AccessLevel, audit bool) string {
 	if strings.TrimSpace(level.Title) != "" {
 		return level.Title
 	}
-	return level.Name
+	if audit {
+		return level.Name
+	}
+	return level.Name[strings.LastIndex(level.Name, "/")+1:]
 }
 
 func levelExplicitlyRequiresManagedDevice(level googleworkspace.AccessLevel) bool {

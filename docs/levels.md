@@ -41,6 +41,14 @@ denials are recorded under `diagnostics.permission_errors`, and licensing gaps,
 report lag, and truncation under `diagnostics.warnings`. Each value left out is
 also listed, with a code, in `artifacts/google-workspace.collector-result.json`.
 
+## Customer and organization IDs
+
+The customer ID (`customer_id`) and the Access Context Manager policy's
+resource name and parent organization are written from `audit`. At `trust`,
+the diagnostics name no customer, Cloud organization, or access policy, and the
+warning for a failed call gives its error code, such as `vendor_error`, in
+place of Google's message.
+
 ## What each level adds, per surface
 
 The core posture surfaces (users, activity, authentication, admins, passwords,
@@ -97,7 +105,13 @@ when configured, Access Context Manager access-level config.
 - **trust**: context-aware-access and device-state deny-event counts, the
   managed-device-requirement-evidenced flag, and (when `organization_id` or
   `access_policy` is set) basic / custom access-level counts and device-policy
-  level titles.
+  level titles. A level with no title is listed by the last part of its
+  resource name.
+- **audit**: the access policy's resource name and parent organization
+  (`access_policy_name`, `access_policy_parent`), and `levels[]` per-access-level
+  rows.
+- **internal**: each level row gains its rule details (IP subnetworks, regions,
+  required access levels, allowed device-management and encryption statuses).
 
 The surfaces below first appear at `audit`; they return nothing at `trust`.
 

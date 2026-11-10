@@ -138,7 +138,8 @@ func TestE2E_RealGoogleWorkspaceCollection(t *testing.T) {
 }
 
 func TestE2E_OutputValidJSON(t *testing.T) {
-	raw := collectE2E(t, e2eLevel())
+	level := e2eLevel()
+	raw := collectE2E(t, level)
 
 	var decoded map[string]any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -147,12 +148,15 @@ func TestE2E_OutputValidJSON(t *testing.T) {
 
 	for _, field := range []string{
 		"schema_version", "collected_at", "collected_at_level", "usage_report_date",
-		"provider", "org_domain", "customer_id", "users", "authentication",
+		"provider", "org_domain", "users", "authentication",
 		"admins", "passwords",
 	} {
 		if _, ok := decoded[field]; !ok {
 			t.Errorf("missing required top-level field: %s", field)
 		}
+	}
+	if _, ok := decoded["customer_id"]; ok != level.AtLeast(componentsdk.LevelAudit) {
+		t.Errorf("customer_id written = %v at %s, want it from the audit level only", ok, level)
 	}
 }
 

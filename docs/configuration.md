@@ -116,9 +116,10 @@ Set `admin_email` to a Super Admin account; several of the admin API reads
 require one. The read-only scopes from step 5 still limit what the collector
 can read. A common setup is a dedicated `epack-collector@<domain>` user.
 
-With a narrower admin role the run still succeeds, but `customer_id` and
-`org_domain` are null, the normalized artifact is not emitted, and the
-surfaces that role cannot read are left out with a diagnostic.
+With a narrower admin role the run still succeeds, but `org_domain` is null,
+and so is `customer_id`, which runs write from the `audit` level. The
+normalized artifact is not emitted, and the surfaces that role cannot read are
+left out with a diagnostic.
 
 ## Optional: Access Context Manager enrichment
 

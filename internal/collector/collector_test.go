@@ -390,7 +390,9 @@ func TestCollect_ComputesPostureFromReportsAndDirectory(t *testing.T) {
 
 	// Top-level fields.
 	wantStr(t, "OrgDomain", posture.OrgDomain, "example.com")
-	wantStr(t, "CustomerID", posture.CustomerID, "C123")
+	if posture.CustomerID.Write || posture.CustomerID.Value != nil {
+		t.Fatalf("CustomerID = %+v at trust, want it left out", posture.CustomerID)
+	}
 	wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-07")
 	if posture.CollectedAt != now.Format(time.RFC3339) {
 		t.Fatalf("CollectedAt = %q, want %q", posture.CollectedAt, now.Format(time.RFC3339))
@@ -1722,9 +1724,10 @@ func TestCollect_ContextAwareAccessErrorDoesNotFailCollection(t *testing.T) {
 		t.Fatal("Diagnostics = nil, want warning about omitted device access posture")
 	}
 
+	// At trust the warning gives the error's code, not its message.
 	found := false
 	for _, warning := range posture.Diagnostics.Warnings {
-		if warning == "surface device_access: scan failed: audit scope missing" {
+		if warning == "surface device_access: scan failed: internal" {
 			found = true
 			break
 		}
@@ -1791,8 +1794,8 @@ func TestCollect_AccessContextManagerEnrichment(t *testing.T) {
 		t.Fatal("DeviceAccess.AccessContextManager = nil, want ACM summary")
 	}
 	acm := posture.DeviceAccess.AccessContextManager
-	if acm.AccessPolicyName != "accessPolicies/111" {
-		t.Fatalf("AccessPolicyName = %q, want accessPolicies/111", acm.AccessPolicyName)
+	if acm.AccessPolicyName != "" {
+		t.Fatalf("AccessPolicyName = %q at trust, want it left out", acm.AccessPolicyName)
 	}
 	if acm.BasicAccessLevelsCount != 1 {
 		t.Fatalf("BasicAccessLevelsCount = %d, want 1", acm.BasicAccessLevelsCount)
@@ -1819,6 +1822,14 @@ func TestCollect_AccessContextManagerEnrichment(t *testing.T) {
 	}
 	if !foundCustomWarning {
 		t.Fatalf("warnings = %#v, want custom-level ACM warning", posture.Diagnostics.Warnings)
+	}
+
+	posture, err = c.Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if name := posture.DeviceAccess.AccessContextManager.AccessPolicyName; name != "accessPolicies/111" {
+		t.Fatalf("AccessPolicyName = %q at audit, want accessPolicies/111", name)
 	}
 }
 
@@ -1902,8 +1913,16 @@ func TestCollect_ResolvesAccessPolicyFromOrganizationID(t *testing.T) {
 	if posture.DeviceAccess == nil || posture.DeviceAccess.AccessContextManager == nil {
 		t.Fatal("DeviceAccess.AccessContextManager = nil, want resolved ACM summary")
 	}
-	if posture.DeviceAccess.AccessContextManager.AccessPolicyName != "accessPolicies/222" {
-		t.Fatalf("AccessPolicyName = %q, want accessPolicies/222", posture.DeviceAccess.AccessContextManager.AccessPolicyName)
+	if acm := posture.DeviceAccess.AccessContextManager; acm.AccessPolicyName != "" || acm.AccessPolicyParent != "" {
+		t.Fatalf("access policy = %q in %q at trust, want both left out", acm.AccessPolicyName, acm.AccessPolicyParent)
+	}
+
+	posture, err = c.Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if acm := posture.DeviceAccess.AccessContextManager; acm.AccessPolicyName != "accessPolicies/222" || acm.AccessPolicyParent != "organizations/999999" {
+		t.Fatalf("access policy = %q in %q at audit, want accessPolicies/222 in organizations/999999", acm.AccessPolicyName, acm.AccessPolicyParent)
 	}
 }
 
@@ -1973,8 +1992,18 @@ func TestCollect_SignInFailureFailsTheRun(t *testing.T) {
 }
 
 // Only a Super Admin can read the tenant record. Without it the run goes on
-// under the customer key, and leaves out only what needs the record.
+// under the customer key, and leaves out only what needs the record. The
+// customer ID is written from the audit level, as null with a gap when the
+// record can't be read, and below it the run records no gap for it.
 func TestCollect_CustomerErrorLeavesOutOnlyTheTenantRecord(t *testing.T) {
+	for _, level := range []componentsdk.Level{componentsdk.LevelTrust, componentsdk.LevelAudit} {
+		t.Run(string(level), func(t *testing.T) {
+			testCustomerErrorAt(t, level)
+		})
+	}
+}
+
+func testCustomerErrorAt(t *testing.T, level componentsdk.Level) {
 	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
 	rec := &componentsdk.Recorder{}
 	client := &mockClient{
@@ -1984,17 +2013,19 @@ func TestCollect_CustomerErrorLeavesOutOnlyTheTenantRecord(t *testing.T) {
 	}
 	c := NewWithClient(Config{AdminEmail: "helpdesk@example.com", Recorder: rec, Now: func() time.Time { return now }}, client)
 
-	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	posture, err := c.Collect(context.Background(), level)
 	if err != nil {
 		t.Fatalf("Collect() error = %v, want the run to go on without the tenant record", err)
 	}
-	if posture.CustomerID != nil || posture.OrgDomain != nil {
-		t.Fatalf("customer_id = %v, org_domain = %v; want both left out", posture.CustomerID, posture.OrgDomain)
+	audit := level.AtLeast(componentsdk.LevelAudit)
+	if posture.CustomerID.Value != nil || posture.CustomerID.Write != audit || posture.OrgDomain != nil {
+		t.Fatalf("customer_id = %+v, org_domain = %v; want both left out", posture.CustomerID, posture.OrgDomain)
 	}
-	for _, pointer := range []string{"/customer_id", "/org_domain"} {
-		if !hasGap(rec, pointer) {
-			t.Errorf("no gap at %s; gaps = %+v", pointer, rec.Gaps())
-		}
+	if !hasGap(rec, "/org_domain") {
+		t.Errorf("no gap at /org_domain; gaps = %+v", rec.Gaps())
+	}
+	if hasGap(rec, "/customer_id") != audit {
+		t.Errorf("gap at /customer_id is %v, want %v; gaps = %+v", !audit, audit, rec.Gaps())
 	}
 	if client.lastCustomerID != googleworkspace.DefaultCustomerKey {
 		t.Fatalf("usage report customer = %q, want the customer key", client.lastCustomerID)
