@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,5 +344,100 @@ func TestRejectedKeyFailsTheRunWithAuthFailed(t *testing.T) {
 	}
 	if unmatched := replay.Unmatched(); len(unmatched) > 0 {
 		t.Fatalf("a failed sign-in went on to call %v", unmatched)
+	}
+}
+
+// accountIDTenant is the clean tenant where the Cloud organization holds two
+// access policies, the device-policy level has no title, and the session
+// controls read fails with a message naming the customer, the organization,
+// and an access policy.
+func accountIDTenant() kitTenant {
+	t := cleanTenant()
+	t.accessPolicies = `{"accessPolicies":[
+		{"name":"accessPolicies/111","parent":"organizations/` + kitOrganizationID + `","title":"Corp policy"},
+		{"name":"accessPolicies/222","parent":"organizations/` + kitOrganizationID + `","title":"Lab policy"}
+	]}`
+	t.accessLevels = `{"accessLevels":[{"name":"accessPolicies/111/accessLevels/untitled_device","basic":{"conditions":[{"devicePolicy":{"requireScreenlock":true}}]}}]}`
+	t.sessionStatus = http.StatusBadRequest
+	t.sessionPolicies = `{"error":{"code":400,"message":"customers/` + kitCustomerID + ` in organizations/` + kitOrganizationID + ` cannot read accessPolicies/111.","errors":[{"message":"bad request","domain":"global","reason":"badRequest"}],"status":"INVALID_ARGUMENT"}}`
+	return t
+}
+
+// A trust run writes no customer ID, Cloud organization ID, or access policy
+// name: not in the artifacts, their diagnostics, or the collector result. An
+// audit run writes them as before.
+func TestTrustRunWritesNoAccountIDs(t *testing.T) {
+	run := func(level componentsdk.Level) (componentsdk.InProcessResult, OrgPosture) {
+		t.Helper()
+		config := kitConfig()
+		config["level"] = string(level)
+		replay, err := collectortest.NewReplay(collectortest.Scenario{Name: t.Name(), Responses: accountIDTenant().responses()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := componentsdk.RunInProcess(Spec("test", "collectortest"), Run, componentsdk.InProcessOptions{
+			Config:    config,
+			Secrets:   kitSecrets(),
+			Transport: replay,
+			Clock:     func() time.Time { return kitNow },
+		})
+		if res.ExitCode != 0 || res.Result == nil {
+			t.Fatalf("run failed with exit %d: %s", res.ExitCode, res.Stderr)
+		}
+		var posture OrgPosture
+		for _, artifact := range res.Artifacts {
+			if artifact.Path == detailedPath {
+				if err := json.Unmarshal(artifact.Data, &posture); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return res, posture
+	}
+	warned := func(posture OrgPosture, want string) bool {
+		return posture.Diagnostics != nil && slices.Contains(posture.Diagnostics.Warnings, want)
+	}
+
+	trust, posture := run(componentsdk.LevelTrust)
+	for _, artifact := range trust.Artifacts {
+		for _, id := range []string{kitCustomerID, kitOrganizationID, "accessPolicies/"} {
+			if strings.Contains(string(artifact.Data), id) {
+				t.Errorf("%s names %s at trust: %s", artifact.Path, id, artifact.Data)
+			}
+		}
+	}
+	if acm := posture.DeviceAccess.AccessContextManager; !slices.Equal(acm.BasicDevicePolicyAccessLevelTitles, []string{"untitled_device"}) {
+		t.Errorf("titles = %q at trust, want the untitled level by its own name", acm.BasicDevicePolicyAccessLevelTitles)
+	}
+	for _, want := range []string{
+		"multiple access context manager policies found for the configured organization; using the first by name",
+		"surface session_controls: scan failed: invalid_response",
+	} {
+		if !warned(posture, want) {
+			t.Errorf("warnings = %q at trust, want %q", posture.Diagnostics.Warnings, want)
+		}
+	}
+	for _, check := range trust.Result.Checks {
+		t.Errorf("trust run has check finding %+v", check)
+	}
+
+	_, posture = run(componentsdk.LevelAudit)
+	if got := posture.CustomerID.Value; got == nil || *got != kitCustomerID {
+		t.Errorf("customer_id = %v at audit, want %s", got, kitCustomerID)
+	}
+	acm := posture.DeviceAccess.AccessContextManager
+	if acm.AccessPolicyName != "accessPolicies/111" || acm.AccessPolicyParent != "organizations/"+kitOrganizationID {
+		t.Errorf("access policy = %q in %q at audit, want accessPolicies/111 in organizations/%s", acm.AccessPolicyName, acm.AccessPolicyParent, kitOrganizationID)
+	}
+	if !slices.Equal(acm.BasicDevicePolicyAccessLevelTitles, []string{"accessPolicies/111/accessLevels/untitled_device"}) {
+		t.Errorf("titles = %q at audit, want the untitled level by its resource name", acm.BasicDevicePolicyAccessLevelTitles)
+	}
+	if want := "multiple access context manager policies found for organizations/" + kitOrganizationID + "; using accessPolicies/111"; !warned(posture, want) {
+		t.Errorf("warnings = %q at audit, want %q", posture.Diagnostics.Warnings, want)
+	}
+	if !slices.ContainsFunc(posture.Diagnostics.Warnings, func(w string) bool {
+		return strings.HasPrefix(w, "surface session_controls: scan failed: ") && strings.Contains(w, "customers/"+kitCustomerID)
+	}) {
+		t.Errorf("warnings = %q at audit, want Google's message on the session controls read", posture.Diagnostics.Warnings)
 	}
 }

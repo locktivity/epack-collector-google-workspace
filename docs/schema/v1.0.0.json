@@ -47,7 +47,8 @@
     },
     "customer_id": {
       "type": ["string", "null"],
-      "description": "Google Workspace customer ID. Null when the tenant record could not be read; only a Super Admin can read it.",
+      "x-epack-level": "audit",
+      "description": "Google Workspace customer ID (audit and above). Null when the tenant record could not be read; only a Super Admin can read it.",
       "x-epack-label": "Customer ID",
       "x-epack-summary": "Google Workspace customer ID."
     },
@@ -674,13 +675,15 @@
           "properties": {
             "access_policy_name": {
               "type": "string",
-              "description": "Access Context Manager policy resource used for config enrichment.",
+              "x-epack-level": "audit",
+              "description": "Access Context Manager policy resource used for config enrichment (audit and above).",
               "x-epack-label": "Access policy",
               "x-epack-summary": "Resource name of the Access Context Manager policy."
             },
             "access_policy_parent": {
               "type": "string",
-              "description": "Parent organization resource for the access policy.",
+              "x-epack-level": "audit",
+              "description": "Parent organization resource for the access policy (audit and above).",
               "x-epack-label": "Policy parent",
               "x-epack-summary": "Organization resource the access policy belongs to."
             },
@@ -1869,7 +1872,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Informational warnings about data gaps or caveats (licensing, report lag, truncation).",
+          "description": "Informational warnings about data gaps or caveats (licensing, report lag, truncation). Below the audit level a warning names no customer, organization, or access policy ID, and gives a failed call's error code in place of Google's message.",
           "x-epack-label": "Warnings",
           "x-epack-summary": "Notes on caveats, such as usage report lag or a capped list."
         }

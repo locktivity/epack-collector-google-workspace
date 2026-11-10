@@ -67,7 +67,21 @@ func Run(ctx componentsdk.CollectorContext) error {
 	if err != nil {
 		return err
 	}
+	declareTargets(config.Recorder, config.Customer)
 	return ctx.Emit(c.Artifacts(posture))
+}
+
+// declareTargets declares the customer the run collected: the one the
+// customer key names, or without it the admin's own customer. The detailed
+// artifact describes it, named by its ID and labelled by its primary domain.
+func declareTargets(rec *componentsdk.Recorder, customer string) {
+	how, key := componentsdk.ChosenByDiscovery, ""
+	if customer != "" {
+		how, key = componentsdk.ChosenByConfig, "customer"
+	}
+	rec.Targets(componentsdk.TargetCustomer, componentsdk.Location{Path: detailedPath, Pointer: ""}, "/customer_id").
+		ChosenBy(how, key).
+		Label("/org_domain")
 }
 
 // Artifacts returns the artifacts for posture: the detailed one, and the

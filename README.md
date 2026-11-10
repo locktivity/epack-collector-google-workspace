@@ -186,9 +186,10 @@ the collector result, and the run still succeeds. The
 each is granted.
 
 Only a Super Admin can read the tenant record. With a narrower admin role,
-`customer_id` and `org_domain` are null, the normalized artifact is not
-emitted, and the Drive external-share count is left out, since telling an
-external recipient from an internal one takes the primary domain. Everything
+`org_domain` is null, and so is `customer_id`, which runs write from the
+`audit` level. The normalized artifact is not emitted, and the Drive
+external-share count is left out, since telling an external recipient from an
+internal one takes the primary domain. Everything
 else is collected under the customer key.
 
 ## Development

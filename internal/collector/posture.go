@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -77,7 +78,7 @@ type OrgPosture struct {
 	UsageReportDate  *string              `json:"usage_report_date"`
 	Provider         string               `json:"provider"`
 	OrgDomain        *string              `json:"org_domain"`
-	CustomerID       *string              `json:"customer_id"`
+	CustomerID       AuditString          `json:"customer_id,omitzero"`
 	Users            UserMetrics          `json:"users"`
 	Activity         *ActivityMetrics     `json:"activity,omitempty"`
 	Authentication   AuthMetrics          `json:"authentication"`
@@ -498,9 +499,10 @@ type DeviceAccessMetrics struct {
 }
 
 // AccessContextManagerMetrics summarizes Access Context Manager access-level
-// config that is relevant to Workspace device access.
+// config that is relevant to Workspace device access. The policy's name and
+// parent are written from the audit level.
 type AccessContextManagerMetrics struct {
-	AccessPolicyName                    string   `json:"access_policy_name"`
+	AccessPolicyName                    string   `json:"access_policy_name,omitempty"`
 	AccessPolicyParent                  string   `json:"access_policy_parent,omitempty"`
 	BasicAccessLevelsCount              int      `json:"basic_access_levels_count"`
 	CustomAccessLevelsCount             int      `json:"custom_access_levels_count"`
@@ -531,6 +533,26 @@ type AccessLevelSummary struct {
 	IPSubnetworks                 []string `json:"ip_subnetworks,omitempty"`
 	Regions                       []string `json:"regions,omitempty"`
 	RequiredAccessLevels          []string `json:"required_access_levels,omitempty"`
+}
+
+// AuditString is a string the detailed artifact writes from the audit level,
+// as null when it was not read. Below the audit level Write is false and the
+// field is left out.
+type AuditString struct {
+	Value *string
+	Write bool
+}
+
+// IsZero reports whether the field is left out, for omitzero.
+func (s AuditString) IsZero() bool { return !s.Write }
+
+// MarshalJSON writes the value, or null.
+func (s AuditString) MarshalJSON() ([]byte, error) { return json.Marshal(s.Value) }
+
+// UnmarshalJSON reads a written value, or null.
+func (s *AuditString) UnmarshalJSON(data []byte) error {
+	s.Write = true
+	return json.Unmarshal(data, &s.Value)
 }
 
 // Diagnostics contains informational gaps and caveats. Scope and admin-role
