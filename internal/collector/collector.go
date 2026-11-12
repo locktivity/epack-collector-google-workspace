@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -189,9 +190,20 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	}
 	c.applyUserScan(posture, report, reportErr, userScan, scanErr, level)
 
-	if level.AtLeast(componentsdk.LevelAudit) {
+	audit := level.AtLeast(componentsdk.LevelAudit)
+	var roles adminRoles
+	if audit || (scanErr == nil && userScan.superAdmins < len(userScan.admins)) {
 		c.status("Scanning admin roles and assignments...")
-		c.enrichAdminInventory(ctx, scope, posture, userScan, scanErr)
+		roles = c.readAdminRoles(ctx, scope, scanErr)
+	}
+	if scanErr == nil {
+		posture.counts.privileged, posture.counts.privileged2SVEnrolled, posture.counts.privilegedUnread = countPrivileged(userScan.admins, roles)
+		if posture.counts.privilegedUnread > 0 {
+			posture.counts.privilegedErr = cmp.Or(roles.rolesErr, roles.assignmentsErr)
+		}
+	}
+	if audit {
+		c.enrichAdminInventory(posture, scope, userScan, scanErr, roles)
 	}
 
 	// Step 4: Query Context-Aware Access deny events for evidence that Google
@@ -244,7 +256,9 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	posture.OAuthTokens = c.scanOAuthTokens(ctx, scope)
 
 	c.status("Scanning domain and SSO settings...")
-	posture.DomainSettings = c.scanDomainSettings(ctx, scope)
+	sso := c.readSSO(ctx)
+	posture.thirdPartySSO = sso.thirdPartySSO
+	posture.DomainSettings = c.scanDomainSettings(ctx, scope, sso)
 
 	c.status("Scanning password policy...")
 	posture.Passwords.Policy = c.scanPasswordPolicy(ctx, scope)
@@ -333,7 +347,15 @@ type userScanResult struct {
 	inventoryDropped      int
 	adminRows             []Admin        // per-privileged-user rows (audit+), aligned with adminIDs
 	adminIDs              []string       // directory user IDs, for role-assignment correlation
+	admins                []adminUser    // every active super or delegated admin, at every level
 	usersByOU             map[string]int // user count per org-unit path, for the OrgUnits surface
+}
+
+// adminUser is an active user with isAdmin or isDelegatedAdmin set. super
+// is isAdmin, and enrolled is isEnrolledIn2Sv.
+type adminUser struct {
+	id              string
+	super, enrolled bool
 }
 
 type deviceAccessScanResult struct {
@@ -363,6 +385,7 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 		inventory             []User
 		adminRows             []Admin
 		adminIDs              []string
+		admins                []adminUser
 		usersByOU             = make(map[string]int)
 	)
 
@@ -421,6 +444,7 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 				isPrivileged = true
 			}
 			if isPrivileged {
+				admins = append(admins, adminUser{id: user.ID, super: user.IsAdmin, enrolled: user.IsEnrolledIn2Sv})
 				if user.IsEnrolledIn2Sv {
 					privileged2SVEnrolled++
 				}
@@ -459,6 +483,7 @@ func (c *Collector) scanUsers(ctx context.Context, scope scanScope) (userScanRes
 		privilegedTotal:       privilegedTotal,
 		privileged2SVEnrolled: privileged2SVEnrolled,
 		privileged2SVEnforced: privileged2SVEnforced,
+		admins:                admins,
 		activeCount:           activeCount,
 		inactiveCount:         inactiveCount,
 		enrolled2SVCount:      enrolled2SVCount,
@@ -553,7 +578,6 @@ func (c *Collector) applyUserScan(posture *OrgPosture, report googleworkspace.Cu
 	posture.counts.inactiveUsers = intPtr(scan.inactiveCount)
 	posture.counts.enrolled2SVUsers = intPtr(scan.enrolled2SVCount)
 	posture.counts.enforced2SVUsers = intPtr(scan.enforced2SVCount)
-	posture.counts.privileged2SVEnrolled = intPtr(scan.privileged2SVEnrolled)
 
 	lagged := func(param string) *float64 {
 		if reportErr != nil {
@@ -569,51 +593,124 @@ func (c *Collector) applyUserScan(posture *OrgPosture, report googleworkspace.Cu
 	}
 }
 
-// enrichAdminInventory lists the custom-role inventory and attaches per-admin
-// role names (and, at internal, the org-unit-scoped flag) to the admin rows
-// collected during scanUsers. It degrades gracefully: if the role-management
-// scope is missing or the impersonation user lacks the role, the role names
-// are left out with a gap and the admin emails / 2SV flags still ship.
-func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, posture *OrgPosture, scan userScanResult, scanErr error) {
-	roleByID := make(map[string]googleworkspace.Role)
-	var customRoles []CustomRole
-	err := c.client.ListRoles(ctx, scope.customerID, func(roles []googleworkspace.Role) error {
-		for _, r := range roles {
-			roleByID[r.ID] = r
-			if !r.IsSystem {
-				customRoles = append(customRoles, CustomRole{
-					Name:           r.Name,
-					Description:    r.Description,
-					PrivilegeCount: r.PrivilegeCount,
+// adminRoles are the admin roles by ID, or rolesErr, and the role
+// assignments by user ID, or assignmentsErr. assignments is nil when either
+// list could not be read, or when the user scan failed, since they are
+// matched to its admins.
+type adminRoles struct {
+	byID           map[string]googleworkspace.Role
+	custom         []CustomRole
+	rolesErr       error
+	assignments    map[string][]googleworkspace.RoleAssignment
+	assignmentsErr error
+}
+
+// readAdminRoles lists the admin roles and, when the user scan worked, the
+// role assignments.
+func (c *Collector) readAdminRoles(ctx context.Context, scope scanScope, scanErr error) adminRoles {
+	r := adminRoles{byID: make(map[string]googleworkspace.Role)}
+	r.rolesErr = c.client.ListRoles(ctx, scope.customerID, func(roles []googleworkspace.Role) error {
+		for _, role := range roles {
+			r.byID[role.ID] = role
+			if !role.IsSystem {
+				r.custom = append(r.custom, CustomRole{
+					Name:           role.Name,
+					Description:    role.Description,
+					PrivilegeCount: role.PrivilegeCount,
 				})
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
-		c.gaps.leaveOut(failed(err), "/admins/custom_roles")
-		c.leaveOutAdminRoles(posture, scope, failed(err))
-		return
+	if r.rolesErr != nil {
+		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", r.rolesErr)
+		return r
 	}
-	slices.SortFunc(customRoles, func(a, b CustomRole) int {
+	slices.SortFunc(r.custom, func(a, b CustomRole) int {
 		return strings.Compare(a.Name, b.Name)
 	})
-	posture.Admins.CustomRoles = customRoles
 	if scanErr != nil {
-		return
+		return r
 	}
-
-	assignmentsByUser := make(map[string][]googleworkspace.RoleAssignment)
-	err = c.client.ListRoleAssignments(ctx, scope.customerID, func(assignments []googleworkspace.RoleAssignment) error {
+	r.assignments = make(map[string][]googleworkspace.RoleAssignment)
+	err := c.client.ListRoleAssignments(ctx, scope.customerID, func(assignments []googleworkspace.RoleAssignment) error {
 		for _, a := range assignments {
-			assignmentsByUser[a.AssignedTo] = append(assignmentsByUser[a.AssignedTo], a)
+			r.assignments[a.AssignedTo] = append(r.assignments[a.AssignedTo], a)
 		}
 		return nil
 	})
 	if err != nil {
 		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
-		c.leaveOutAdminRoles(posture, scope, failed(err))
+		r.assignmentsErr, r.assignments = err, nil
+	}
+	return r
+}
+
+// countPrivileged counts the privileged users among admins, and those of
+// them enrolled in 2-Step Verification. A super admin is privileged. A
+// delegated admin is privileged when a role assigned to them holds a write
+// privilege, as writePrivilege says. Each is nil when roles could not be
+// read and a delegated admin's roles were needed, and unread then counts
+// those delegated admins.
+func countPrivileged(admins []adminUser, roles adminRoles) (privileged, enrolled *int, unread int) {
+	var n, mfa int
+	for _, a := range admins {
+		switch {
+		case a.super:
+		case roles.assignments == nil:
+			unread++
+			continue
+		case !slices.ContainsFunc(roles.assignments[a.id], func(ra googleworkspace.RoleAssignment) bool {
+			return slices.ContainsFunc(roles.byID[ra.RoleID].Privileges, writePrivilege) || roles.byID[ra.RoleID].IsSuperAdmin
+		}):
+			continue
+		}
+		n++
+		if a.enrolled {
+			mfa++
+		}
+	}
+	if unread > 0 {
+		return nil, nil, unread
+	}
+	return &n, &mfa, 0
+}
+
+// writePrivilege reports whether the admin role privilege named name can
+// change users, groups, org units, security, or settings. A privilege that
+// only retrieves or reads them, such as USERS_RETRIEVE, cannot.
+func writePrivilege(name string) bool {
+	for _, read := range []string{"RETRIEVE", "READ", "VIEW"} {
+		if strings.Contains(name, read) {
+			return false
+		}
+	}
+	for _, area := range []string{"USER", "GROUP", "ORGANIZATION_UNIT", "SECURITY", "SETTING", "DOMAIN", "SUPER_ADMIN", "APP_ADMIN", "ADMIN_APIS"} {
+		if strings.Contains(name, area) {
+			return true
+		}
+	}
+	return false
+}
+
+// enrichAdminInventory writes the custom-role inventory and attaches
+// per-admin role names (and, at internal, the org-unit-scoped flag) to the
+// admin rows collected during scanUsers. It degrades gracefully: if the
+// role-management scope is missing or the impersonation user lacks the
+// role, the role names are left out with a gap and the admin emails / 2SV
+// flags still ship.
+func (c *Collector) enrichAdminInventory(posture *OrgPosture, scope scanScope, scan userScanResult, scanErr error, roles adminRoles) {
+	if roles.rolesErr != nil {
+		c.gaps.leaveOut(failed(roles.rolesErr), "/admins/custom_roles")
+		c.leaveOutAdminRoles(posture, scope, failed(roles.rolesErr))
+		return
+	}
+	posture.Admins.CustomRoles = roles.custom
+	if scanErr != nil {
+		return
+	}
+	if roles.assignmentsErr != nil {
+		c.leaveOutAdminRoles(posture, scope, failed(roles.assignmentsErr))
 		return
 	}
 
@@ -622,8 +719,8 @@ func (c *Collector) enrichAdminInventory(ctx context.Context, scope scanScope, p
 	for i := range rows {
 		userID := scan.adminIDs[i]
 		seen := make(map[string]struct{})
-		for _, a := range assignmentsByUser[userID] {
-			if role, ok := roleByID[a.RoleID]; ok {
+		for _, a := range roles.assignments[userID] {
+			if role, ok := roles.byID[a.RoleID]; ok {
 				if _, dup := seen[role.Name]; !dup {
 					rows[i].Roles = append(rows[i].Roles, role.Name)
 					seen[role.Name] = struct{}{}

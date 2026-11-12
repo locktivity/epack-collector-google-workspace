@@ -23,6 +23,12 @@ func (c *APIClient) ListRoles(ctx context.Context, customerID string, callback f
 			if role == nil {
 				continue
 			}
+			privileges := make([]string, 0, len(role.RolePrivileges))
+			for _, p := range role.RolePrivileges {
+				if p != nil {
+					privileges = append(privileges, p.PrivilegeName)
+				}
+			}
 			roles = append(roles, Role{
 				ID:             strconv.FormatInt(role.RoleId, 10),
 				Name:           role.RoleName,
@@ -30,6 +36,7 @@ func (c *APIClient) ListRoles(ctx context.Context, customerID string, callback f
 				PrivilegeCount: len(role.RolePrivileges),
 				IsSystem:       role.IsSystemRole,
 				IsSuperAdmin:   role.IsSuperAdminRole,
+				Privileges:     privileges,
 			})
 		}
 		if len(roles) == 0 {

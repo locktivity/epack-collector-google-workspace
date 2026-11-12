@@ -103,7 +103,7 @@ func TestEveryWorkspaceCallDeclaresItsPermission(t *testing.T) {
 	ops := []string{
 		OpCustomersGet, OpUsersList, OpRolesList, OpRoleAssignmentsList, OpGroupsList, OpMembersList,
 		OpOrgUnitsList, OpMobileDevicesList, OpChromeOSDevicesList, OpDomainsList, OpUsageReportGet,
-		OpActivitiesList, OpAccessEventsList, OpGroupSettingsGet, OpSAMLProfilesList, OpPoliciesList,
+		OpActivitiesList, OpAccessEventsList, OpGroupSettingsGet, OpSAMLProfilesList, OpSSOAssignmentsList, OpPoliciesList,
 		OpAccessPoliciesList, OpAccessLevelsList, OpVaultMattersList, OpVaultHoldsList, OpSignJWT, OpImpersonate,
 	}
 	for _, op := range ops {

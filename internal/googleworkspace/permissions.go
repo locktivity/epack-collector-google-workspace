@@ -32,6 +32,7 @@ var operationPermissions = map[string]string{
 	OpAccessEventsList:    reports.AdminReportsAuditReadonlyScope,
 	OpGroupSettingsGet:    groupssettings.AppsGroupsSettingsScope,
 	OpSAMLProfilesList:    cloudidentity.CloudIdentityInboundssoReadonlyScope,
+	OpSSOAssignmentsList:  cloudidentity.CloudIdentityInboundssoReadonlyScope,
 	OpPoliciesList:        cloudidentity.CloudIdentityPoliciesReadonlyScope,
 	OpAccessPoliciesList:  "accesscontextmanager.policies.list",
 	OpAccessLevelsList:    "accesscontextmanager.accessLevels.list",

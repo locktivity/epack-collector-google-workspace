@@ -38,6 +38,35 @@ func (c *APIClient) ListSAMLProfiles(ctx context.Context, callback func([]SAMLPr
 	return listError(OpSAMLProfilesList, "listing SAML SSO profiles", err)
 }
 
+// ListSSOAssignments lists the assignments that say which org units and
+// groups sign in through a SAML profile.
+func (c *APIClient) ListSSOAssignments(ctx context.Context, callback func([]SSOAssignment) error) error {
+	call := c.cloudIdentity.InboundSsoAssignments.List().
+		PageSize(maxSAMLProfilesPerPage).
+		Fields(googleapi.Field("nextPageToken,inboundSsoAssignments(ssoMode,samlSsoInfo(inboundSamlSsoProfile),targetOrgUnit,targetGroup)"))
+
+	// Cloud Identity leaves an empty list out of its answer, so {} means no
+	// assignments.
+	err := call.Pages(named(ctx, OpSSOAssignmentsList), func(resp *cloudidentity.ListInboundSsoAssignmentsResponse) error {
+		assignments := make([]SSOAssignment, 0, len(resp.InboundSsoAssignments))
+		for _, a := range resp.InboundSsoAssignments {
+			if a == nil {
+				continue
+			}
+			assignment := SSOAssignment{SSOMode: a.SsoMode, TargetOrgUnit: a.TargetOrgUnit, TargetGroup: a.TargetGroup}
+			if a.SamlSsoInfo != nil {
+				assignment.Profile = a.SamlSsoInfo.InboundSamlSsoProfile
+			}
+			assignments = append(assignments, assignment)
+		}
+		if len(assignments) == 0 {
+			return nil
+		}
+		return callback(assignments)
+	})
+	return listError(OpSSOAssignmentsList, "listing SSO assignments", err)
+}
+
 // ListDomains lists the customer's domains. The list endpoint is not paginated.
 func (c *APIClient) ListDomains(ctx context.Context, customerID string) ([]Domain, error) {
 	resp, err := c.dirDomains.Domains.List(customerID).

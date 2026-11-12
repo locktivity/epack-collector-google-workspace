@@ -162,6 +162,9 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		WeakPasswordPct:               reported(n.weakPasswordUsers, componentsdk.RoundUp),
 		PasswordPolicyNoncompliantPct: reported(n.shortPasswordUsers, componentsdk.RoundUp),
 	}
+	if o.thirdPartySSO != nil {
+		userSecurity.MFACoveragePct, userSecurity.MFAPhishingResistantPct = Percentage{}, Percentage{}
+	}
 	if userSecurity != (IDPPostureUserSecurity{}) {
 		posture.UserSecurity = &userSecurity
 	}
@@ -172,9 +175,13 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		}
 	}
 
-	privileged := o.Admins.PrivilegedUsersCount
+	privileged := n.privileged
+	privilegedPresent := present(privileged)
+	if n.privilegedErr != nil && o.Admins.SuperAdminCount != nil && *o.Admins.SuperAdminCount > 0 {
+		privilegedPresent = boolPtr(true)
+	}
 	privilegedAccess := IDPPosturePrivilegedAccess{
-		PrivilegedUsersPresent:   present(privileged),
+		PrivilegedUsersPresent:   privilegedPresent,
 		PrivilegedUsersCount:     atAudit(privileged),
 		SuperAdminCount:          atAudit(o.Admins.SuperAdminCount),
 		PrivilegedMFAUserCount:   atAudit(n.privileged2SVEnrolled),
@@ -184,6 +191,9 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		privilegedAccess.StandingPrivilegedUsersPresent = boolPtr(false)
 		privilegedAccess.StandingPrivilegedUsersCount = atAudit(privileged)
 	}
+	if o.thirdPartySSO != nil && delegatedPrivileged(o) {
+		privilegedAccess.PrivilegedMFAUserCount, privilegedAccess.PrivilegedMFACoveragePct = nil, Percentage{}
+	}
 	if privilegedAccess != (IDPPosturePrivilegedAccess{}) {
 		posture.PrivilegedAccess = &privilegedAccess
 	}
@@ -192,6 +202,9 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		MFARequired:            all(n.enforced2SVUsers, active),
 		MFARequiredUserCount:   atAudit(n.enforced2SVUsers),
 		MFARequiredCoveragePct: share(n.enforced2SVUsers, active, componentsdk.RoundDown),
+	}
+	if o.thirdPartySSO != nil {
+		policy.MFARequired, policy.MFARequiredUserCount, policy.MFARequiredCoveragePct = nil, nil, Percentage{}
 	}
 	if o.SignIn != nil {
 		policy.SessionLifetimeMaxMin = o.SignIn.WebSessionDurationMaxMinutes
@@ -381,9 +394,68 @@ const (
 // idpPostureLeftOut, and a gap at each usage report percentage when the
 // report has 0 users. For a tenant with admins, it also records a gap at the
 // standing values. The count gets one only at the audit level.
+func idpLocation(pointer string) componentsdk.Location {
+	return componentsdk.Location{Path: idpPosturePath, Pointer: pointer}
+}
+
+// delegatedPrivileged reports whether a privileged user may be a delegated
+// admin. Super admins always sign in with Google, never through a SAML
+// profile.
+func delegatedPrivileged(o *OrgPosture) bool {
+	super := o.Admins.SuperAdminCount
+	return o.counts.privileged == nil || super == nil || *o.counts.privileged > *super
+}
+
+// thirdPartyMFA lists the normalized MFA values that leave out users who
+// sign in through a third-party SAML identity provider. The counts are
+// audit-level fields.
+var thirdPartyMFA = []struct {
+	pointer string
+	audit   bool
+}{
+	{"/user_security/mfa_coverage_pct", false},
+	{"/user_security/mfa_phishing_resistant_pct", false},
+	{"/policy/mfa_required", false},
+	{"/policy/mfa_required_user_count", true},
+	{"/policy/mfa_required_coverage_pct", false},
+}
+
 func (c *Collector) recordIDPPostureGaps(posture *OrgPosture, level componentsdk.Level) {
 	for _, source := range idpSources {
 		c.gaps.mirror(source.to, source.from...)
+	}
+	audit := level.AtLeast(componentsdk.LevelAudit)
+	n := posture.counts
+	superAdmins := posture.Admins.SuperAdminCount != nil && *posture.Admins.SuperAdminCount > 0
+	standing := []string{"/privileged_access/standing_privileged_users_present"}
+	if audit {
+		standing = append(standing, "/privileged_access/standing_privileged_users_count")
+	}
+	if n.privilegedErr != nil {
+		unknown := []string{"/privileged_access/privileged_mfa_coverage_pct"}
+		if audit {
+			unknown = append(unknown, "/privileged_access/privileged_users_count", "/privileged_access/privileged_mfa_user_count")
+		}
+		if !superAdmins {
+			unknown = append(unknown, "/privileged_access/privileged_users_present")
+			unknown = append(unknown, standing...)
+		}
+		for _, pointer := range unknown {
+			c.gaps.rec.Partial(idpLocation(pointer), n.privilegedUnread, n.privilegedErr)
+		}
+	}
+	if why := posture.thirdPartySSO; why != nil {
+		for _, v := range thirdPartyMFA {
+			if !v.audit || level.AtLeast(componentsdk.LevelAudit) {
+				c.gaps.record(idpLocation(v.pointer), why, 0)
+			}
+		}
+		if delegatedPrivileged(posture) {
+			c.gaps.record(idpLocation("/privileged_access/privileged_mfa_coverage_pct"), why, 0)
+			if level.AtLeast(componentsdk.LevelAudit) {
+				c.gaps.record(idpLocation("/privileged_access/privileged_mfa_user_count"), why, 0)
+			}
+		}
 	}
 	for _, u := range idpPostureLeftOut {
 		if u.audit && !level.AtLeast(componentsdk.LevelAudit) {
@@ -391,13 +463,9 @@ func (c *Collector) recordIDPPostureGaps(posture *OrgPosture, level componentsdk
 		}
 		c.gaps.rec.NotCollectedCode(componentsdk.Location{Path: idpPosturePath, Pointer: u.pointer}, u.code, u.reason)
 	}
-	if privileged := posture.Admins.PrivilegedUsersCount; privileged != nil && *privileged > 0 {
-		standing := []string{"/privileged_access/standing_privileged_users_present"}
-		if level.AtLeast(componentsdk.LevelAudit) {
-			standing = append(standing, "/privileged_access/standing_privileged_users_count")
-		}
+	if privileged := n.privileged; (privileged != nil && *privileged > 0) || (n.privilegedErr != nil && superAdmins) {
 		for _, pointer := range standing {
-			c.gaps.rec.NotCollectedCode(componentsdk.Location{Path: idpPosturePath, Pointer: pointer}, componentsdk.CodeNotRead, roleExpiration)
+			c.gaps.rec.NotCollectedCode(idpLocation(pointer), componentsdk.CodeNotRead, roleExpiration)
 		}
 	}
 	if active := posture.Users.Active; active == nil || *active == 0 {
