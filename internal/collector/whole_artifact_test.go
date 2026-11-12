@@ -35,7 +35,7 @@ func fullyPopulatedClient(now time.Time) *mockClient {
 		groups:          []googleworkspace.Group{{Email: "g@example.com", Name: "G", DirectMembersCount: 2, AdminCreated: true}},
 		groupSettings:   map[string]googleworkspace.GroupSettings{"g@example.com": {AllowExternalMembers: true, WhoCanJoin: "INVITED_CAN_JOIN"}},
 		groupMembers:    map[string][]googleworkspace.GroupMember{"g@example.com": {{Email: "user@example.com", Role: "MEMBER"}}},
-		mobileDevices:   []googleworkspace.Device{{Platform: "MOBILE", OS: "ANDROID", OwnerEmail: "user@example.com", Compliant: true, Encrypted: true, LastSync: now}},
+		mobileDevices:   []googleworkspace.Device{{Platform: "MOBILE", OS: "ANDROID", OwnerEmail: "user@example.com", Compliant: boolPtr(true), Encrypted: true, LastSync: now}},
 		samlProfiles:    []googleworkspace.SAMLProfile{{DisplayName: "Okta", IdpEntityID: "https://idp", SSOServiceURI: "https://idp.example.com/sso?x=1"}},
 		domains:         []googleworkspace.Domain{{DomainName: "example.com", Verified: true, IsPrimary: true}},
 		passwordPolicies: []googleworkspace.PasswordPolicy{

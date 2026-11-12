@@ -441,7 +441,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Names of the admin roles assigned to the user. Absent when the role assignments could not be read.",
+                "description": "Names of the admin roles assigned to the user, and for a delegated admin those assigned to a group the user is in. Absent when the role assignments could not be read.",
                 "x-epack-label": "Roles",
                 "x-epack-summary": "Admin roles granted to the user, such as User Management Admin."
               },
@@ -1118,7 +1118,7 @@
         },
         "compliant_by_os": {
           "type": "object",
-          "description": "Managed devices that count as compliant, by operating system. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active.",
+          "description": "Managed devices that count as compliant, by operating system. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active. A mobile device Google reports no compromise status for is in neither this nor non_compliant_by_os.",
           "x-epack-label": "Compliant by OS",
           "x-epack-summary": "Managed devices that count as compliant, by operating system.",
           "additionalProperties": {
@@ -1130,7 +1130,7 @@
         },
         "non_compliant_by_os": {
           "type": "object",
-          "description": "Managed devices that do not count as compliant, by operating system.",
+          "description": "Managed devices that do not count as compliant, by operating system. A mobile device Google reports no compromise status for is in neither this nor compliant_by_os.",
           "x-epack-label": "Non-compliant by OS",
           "x-epack-summary": "Managed devices that do not count as compliant, by operating system.",
           "additionalProperties": {
@@ -1181,8 +1181,8 @@
                 "x-epack-summary": "Email of the device owner. A Chrome OS device has one only when an admin noted an email address as its user."
               },
               "compliant": {
-                "type": "boolean",
-                "description": "Whether the device counts as compliant. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active.",
+                "type": ["boolean", "null"],
+                "description": "Whether the device counts as compliant. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active. Null when Google reports no compromise status for a mobile device.",
                 "x-epack-label": "Compliant",
                 "x-epack-summary": "Whether the device counts as compliant. A mobile device counts when no compromise is detected, and a Chrome OS device when its status is active."
               },

@@ -113,6 +113,7 @@ type kitTenant struct {
 	userPages         []string
 	roles             string
 	roleAssignments   string
+	userAssignments   map[string]string
 	accessEvents      string
 	accessPolicies    string
 	accessLevels      string
@@ -182,6 +183,11 @@ func cleanTenant() kitTenant {
 			{"assignedTo":"u1","roleId":"1","scopeType":"CUSTOMER"},
 			{"assignedTo":"u2","roleId":"2","scopeType":"ORG_UNIT","orgUnitId":"03ph8a2z1"}
 		]}`,
+		// Each delegated admin's own assignments, with those of the groups
+		// they are in.
+		userAssignments: map[string]string{
+			"u2": `{"kind":"admin#directory#roleAssignments","items":[{"assignedTo":"u2","roleId":"2","scopeType":"ORG_UNIT","orgUnitId":"03ph8a2z1"}]}`,
+		},
 		accessEvents: `{"kind":"admin#reports#activities","items":[
 			{"actor":{"email":"bob@example.com"},"id":{"time":"1775563200"},"events":[{"name":"ACCESS_DENY_EVENT","parameters":[{"name":"CAA_APPLICATION","value":"Gmail"},{"name":"CAA_DEVICE_STATE","value":"Unmanaged"}]}]},
 			{"actor":{"email":"eve@example.com"},"id":{"time":"1775476800"},"events":[{"name":"ACCESS_DENY_EVENT","parameters":[{"name":"CAA_APPLICATION","value":"Drive"}]}]}
@@ -295,6 +301,29 @@ func emptyTenant() kitTenant {
 func readOnlyAdminTenant() kitTenant {
 	t := cleanTenant()
 	t.roles = strings.Replace(t.roles, `{"privilegeName":"USERS_UPDATE","serviceId":"00haapch16h1ysv"}`, `{"privilegeName":"ORGANIZATION_UNITS_RETRIEVE","serviceId":"00haapch16h1ysv"}`, 1)
+	return t
+}
+
+// groupRoleTenant is the clean tenant with the delegated admin's role
+// assigned to a group they are in. The customer's list names the group, and
+// only the admin's own list gives them the role.
+func groupRoleTenant() kitTenant {
+	t := cleanTenant()
+	t.roleAssignments = `{"kind":"admin#directory#roleAssignments","items":[
+		{"assignedTo":"u1","roleId":"1","scopeType":"CUSTOMER"},
+		{"assignedTo":"g1","roleId":"2","scopeType":"CUSTOMER"}
+	]}`
+	t.userAssignments = map[string]string{
+		"u2": `{"kind":"admin#directory#roleAssignments","items":[{"assignedTo":"g1","roleId":"2","scopeType":"CUSTOMER"}]}`,
+	}
+	return t
+}
+
+// noCompromiseStatusTenant is the clean tenant with the iPhone reporting no
+// compromise status.
+func noCompromiseStatusTenant() kitTenant {
+	t := cleanTenant()
+	t.mobileDevices = strings.Replace(t.mobileDevices, `,"deviceCompromisedStatus":"Compromise detected"`, "", 1)
 	return t
 }
 
@@ -467,6 +496,11 @@ func (t kitTenant) responses() []collectortest.Response {
 		}), t.lessSecureApps),
 		get(apiURL(kitVault, "/matters", url.Values{"pageSize": {"100"}, "view": {"BASIC"}, "fields": {fieldsVaultMatters}}), t.vaultMatters),
 	)
+	for user, body := range t.userAssignments {
+		out = append(out, get(apiURL(kitDirectory, "/customer/"+dc+"/roleassignments", url.Values{
+			"userKey": {user}, "includeIndirectRoleAssignments": {"true"}, "maxResults": {"200"}, "fields": {fieldsRoleAssignments},
+		}), body))
+	}
 	for email, body := range t.groupSettings {
 		out = append(out, get(apiURL(kitGroupSettings, "/"+email, nil), body))
 	}

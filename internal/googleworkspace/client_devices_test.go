@@ -49,3 +49,48 @@ func TestListChromeOSDevicesKeepsTheOwnerOnlyWhenItIsAnEmail(t *testing.T) {
 		}
 	}
 }
+
+// A mobile device with no compromise status has no compliance verdict.
+func TestListMobileDevicesLeavesComplianceUnknownWithoutACompromiseStatus(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"kind":"admin#directory#mobiledevices","mobiledevices":[
+			{"type":"ANDROID","os":"Android 14","deviceCompromisedStatus":"No compromise detected"},
+			{"type":"ANDROID","os":"Android 13","deviceCompromisedStatus":"Compromise detected"},
+			{"type":"IOS_SYNC","os":"iOS 17.1"}
+		]}`))
+	})
+	var got []Device
+	err := client.ListMobileDevices(context.Background(), "C123", func(batch []Device) error {
+		got = append(got, batch...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ListMobileDevices() error = %v", err)
+	}
+	if len(got) != 3 || got[0].Compliant == nil || !*got[0].Compliant || got[1].Compliant == nil || *got[1].Compliant || got[2].Compliant != nil {
+		t.Fatalf("devices = %+v, want compliant, not compliant, and unknown", got)
+	}
+}
+
+// A user's own role assignments include those of the groups they are in,
+// which Google lists only when asked about one user.
+func TestListUserRoleAssignmentsAsksForGroupRoles(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("userKey") != "u2" || q.Get("includeIndirectRoleAssignments") != "true" {
+			t.Errorf("query = %s, want userKey u2 and includeIndirectRoleAssignments true", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"kind":"admin#directory#roleAssignments","items":[{"assignedTo":"g1","roleId":"2","scopeType":"CUSTOMER"}]}`))
+	})
+	var got []RoleAssignment
+	err := client.ListUserRoleAssignments(context.Background(), "C123", "u2", func(batch []RoleAssignment) error {
+		got = append(got, batch...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ListUserRoleAssignments() error = %v", err)
+	}
+	if len(got) != 1 || got[0].RoleID != "2" {
+		t.Fatalf("assignments = %+v, want the group's role 2", got)
+	}
+}

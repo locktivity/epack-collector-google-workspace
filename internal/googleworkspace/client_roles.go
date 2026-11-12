@@ -51,9 +51,30 @@ func (c *APIClient) ListRoles(ctx context.Context, customerID string, callback f
 func (c *APIClient) ListRoleAssignments(ctx context.Context, customerID string, callback func([]RoleAssignment) error) error {
 	call := c.dirRoles.RoleAssignments.List(customerID).
 		MaxResults(maxRoleAssignmentsPerPage).
-		Fields(googleapi.Field("kind,nextPageToken,items(assignedTo,roleId,scopeType,orgUnitId)"))
+		Fields(googleapi.Field(roleAssignmentFields))
 
-	err := call.Pages(named(ctx, OpRoleAssignmentsList), func(resp *admin.RoleAssignments) error {
+	err := call.Pages(named(ctx, OpRoleAssignmentsList), roleAssignmentPage(callback))
+	return listError(OpRoleAssignmentsList, "listing role assignments", err)
+}
+
+// ListUserRoleAssignments lists the role grants a user holds, both their own
+// and those of the groups they are in. Google lists a group's grants for its
+// members only when asked about one user.
+func (c *APIClient) ListUserRoleAssignments(ctx context.Context, customerID, userKey string, callback func([]RoleAssignment) error) error {
+	call := c.dirRoles.RoleAssignments.List(customerID).
+		UserKey(userKey).
+		IncludeIndirectRoleAssignments(true).
+		MaxResults(maxRoleAssignmentsPerPage).
+		Fields(googleapi.Field(roleAssignmentFields))
+
+	err := call.Pages(named(ctx, OpUserAssignmentsList), roleAssignmentPage(callback))
+	return listError(OpUserAssignmentsList, "listing a user's role assignments", err)
+}
+
+const roleAssignmentFields = "kind,nextPageToken,items(assignedTo,roleId,scopeType,orgUnitId)"
+
+func roleAssignmentPage(callback func([]RoleAssignment) error) func(*admin.RoleAssignments) error {
+	return func(resp *admin.RoleAssignments) error {
 		if resp.Kind == "" {
 			return invalidResponse("role assignments page has no kind")
 		}
@@ -73,6 +94,5 @@ func (c *APIClient) ListRoleAssignments(ctx context.Context, customerID string, 
 			return nil
 		}
 		return callback(assignments)
-	})
-	return listError(OpRoleAssignmentsList, "listing role assignments", err)
+	}
 }

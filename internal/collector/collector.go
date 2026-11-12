@@ -194,12 +194,12 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	var roles adminRoles
 	if audit || (scanErr == nil && userScan.superAdmins < len(userScan.admins)) {
 		c.status("Scanning admin roles and assignments...")
-		roles = c.readAdminRoles(ctx, scope, scanErr)
+		roles = c.readAdminRoles(ctx, scope, scanErr, userScan.admins)
 	}
 	if scanErr == nil {
 		posture.counts.privileged, posture.counts.privileged2SVEnrolled, posture.counts.privilegedUnread = countPrivileged(userScan.admins, roles)
 		if posture.counts.privilegedUnread > 0 {
-			posture.counts.privilegedErr = cmp.Or(roles.rolesErr, roles.assignmentsErr)
+			posture.counts.privilegedErr = cmp.Or(roles.rolesErr, roles.assignmentsErr, roles.unreadErr)
 		}
 	}
 	if audit {
@@ -596,18 +596,25 @@ func (c *Collector) applyUserScan(posture *OrgPosture, report googleworkspace.Cu
 // adminRoles are the admin roles by ID, or rolesErr, and the role
 // assignments by user ID, or assignmentsErr. assignments is nil when either
 // list could not be read, or when the user scan failed, since they are
-// matched to its admins.
+// matched to its admins. A delegated admin's assignments include those of
+// the groups they are in, unless unread holds the error that stopped their
+// read. unreadErr is the first of those errors.
 type adminRoles struct {
 	byID           map[string]googleworkspace.Role
 	custom         []CustomRole
 	rolesErr       error
 	assignments    map[string][]googleworkspace.RoleAssignment
 	assignmentsErr error
+	unread         map[string]error
+	unreadErr      error
 }
 
 // readAdminRoles lists the admin roles and, when the user scan worked, the
-// role assignments.
-func (c *Collector) readAdminRoles(ctx context.Context, scope scanScope, scanErr error) adminRoles {
+// role assignments. The customer's list holds only the roles assigned to a
+// user directly, so each delegated admin's own assignments, which add the
+// roles their groups hold, are read one admin at a time. A trust run writes
+// no admin rows, so it reads only those.
+func (c *Collector) readAdminRoles(ctx context.Context, scope scanScope, scanErr error, admins []adminUser) adminRoles {
 	r := adminRoles{byID: make(map[string]googleworkspace.Role)}
 	r.rolesErr = c.client.ListRoles(ctx, scope.customerID, func(roles []googleworkspace.Role) error {
 		for _, role := range roles {
@@ -633,31 +640,53 @@ func (c *Collector) readAdminRoles(ctx context.Context, scope scanScope, scanErr
 		return r
 	}
 	r.assignments = make(map[string][]googleworkspace.RoleAssignment)
-	err := c.client.ListRoleAssignments(ctx, scope.customerID, func(assignments []googleworkspace.RoleAssignment) error {
-		for _, a := range assignments {
-			r.assignments[a.AssignedTo] = append(r.assignments[a.AssignedTo], a)
+	if scope.level.AtLeast(componentsdk.LevelAudit) {
+		err := c.client.ListRoleAssignments(ctx, scope.customerID, func(assignments []googleworkspace.RoleAssignment) error {
+			for _, a := range assignments {
+				r.assignments[a.AssignedTo] = append(r.assignments[a.AssignedTo], a)
+			}
+			return nil
+		})
+		if err != nil {
+			c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
+			r.assignmentsErr, r.assignments = err, nil
+			return r
 		}
-		return nil
-	})
-	if err != nil {
-		c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
-		r.assignmentsErr, r.assignments = err, nil
+	}
+	for _, a := range admins {
+		if a.super {
+			continue
+		}
+		var held []googleworkspace.RoleAssignment
+		err := c.client.ListUserRoleAssignments(ctx, scope.customerID, a.id, func(assignments []googleworkspace.RoleAssignment) error {
+			held = append(held, assignments...)
+			return nil
+		})
+		if err != nil {
+			if r.unreadErr == nil {
+				c.warnSurfaceScan("admins", "admin.directory.rolemanagement.readonly", "Super Admin", err)
+				r.unreadErr, r.unread = err, map[string]error{}
+			}
+			r.unread[a.id] = err
+			continue
+		}
+		r.assignments[a.id] = held
 	}
 	return r
 }
 
 // countPrivileged counts the privileged users among admins, and those of
 // them enrolled in 2-Step Verification. A super admin is privileged. A
-// delegated admin is privileged when a role assigned to them holds a write
-// privilege, as writePrivilege says. Each is nil when roles could not be
-// read and a delegated admin's roles were needed, and unread then counts
-// those delegated admins.
+// delegated admin is privileged when a role assigned to them, or to a group
+// they are in, holds a write privilege, as writePrivilege says. Each is nil
+// when roles could not be read and a delegated admin's roles were needed,
+// and unread then counts those delegated admins.
 func countPrivileged(admins []adminUser, roles adminRoles) (privileged, enrolled *int, unread int) {
 	var n, mfa int
 	for _, a := range admins {
 		switch {
 		case a.super:
-		case roles.assignments == nil:
+		case roles.assignments == nil, roles.unread[a.id] != nil:
 			unread++
 			continue
 		case !slices.ContainsFunc(roles.assignments[a.id], func(ra googleworkspace.RoleAssignment) bool {
@@ -718,6 +747,13 @@ func (c *Collector) enrichAdminInventory(posture *OrgPosture, scope scanScope, s
 	includeInternal := scope.level.AtLeast(componentsdk.LevelInternal)
 	for i := range rows {
 		userID := scan.adminIDs[i]
+		if err := roles.unread[userID]; err != nil {
+			c.gaps.leaveOut(failed(err), itemPointer("/admins/inventory", i, "roles"))
+			if includeInternal {
+				c.gaps.leaveOut(failed(err), itemPointer("/admins/inventory", i, "org_unit_scoped"))
+			}
+			continue
+		}
 		seen := make(map[string]struct{})
 		for _, a := range roles.assignments[userID] {
 			if role, ok := roles.byID[a.RoleID]; ok {

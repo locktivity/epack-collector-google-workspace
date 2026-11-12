@@ -230,6 +230,11 @@ func TestCountPrivileged(t *testing.T) {
 	if privileged == nil || *privileged != 1 {
 		t.Errorf("super admin alone: countPrivileged = %s, want 1", showPtr(privileged))
 	}
+	roles.unread = map[string]error{"reader": errors.New("refused")}
+	privileged, enrolled, unread = countPrivileged(admins, roles)
+	if privileged != nil || enrolled != nil || unread != 1 {
+		t.Errorf("reader's assignments unread: countPrivileged = %s, %s, %d; want nil, nil, 1", showPtr(privileged), showPtr(enrolled), unread)
+	}
 }
 
 // The identity providers named are those a SAML_SSO assignment sends users
@@ -249,6 +254,54 @@ func TestSAMLProviders(t *testing.T) {
 	}
 	if got := samlProviders(profiles, []googleworkspace.SSOAssignment{{SSOMode: "SSO_OFF"}}); len(got) != 0 {
 		t.Errorf("samlProviders with SSO off = %q, want none", got)
+	}
+}
+
+// A delegated admin is privileged when a role assigned to a group they are
+// in can change users. When their own assignments can't be read, whether they
+// are privileged is unknown, and their row leaves its roles out.
+func TestDelegatedAdminWithARoleThroughAGroup(t *testing.T) {
+	users := []googleworkspace.User{
+		{ID: "u1", PrimaryEmail: "admin@example.com", IsAdmin: true, IsEnrolledIn2Sv: true},
+		{ID: "u2", PrimaryEmail: "helpdesk@example.com", IsDelegatedAdmin: true, IsEnrolledIn2Sv: true},
+	}
+	roles := []googleworkspace.Role{{ID: "2", Name: "Helpdesk", Privileges: []string{"USERS_UPDATE"}}}
+	toGroup := []googleworkspace.RoleAssignment{{AssignedTo: "g1", RoleID: "2", ScopeType: "CUSTOMER"}}
+	collect := func(client *mockClient) (*Collector, *OrgPosture, *componentsdk.Recorder) {
+		t.Helper()
+		rec := &componentsdk.Recorder{}
+		c := NewWithClient(Config{AdminEmail: "admin@example.com", Recorder: rec}, client)
+		posture, err := c.Collect(t.Context(), componentsdk.LevelAudit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		posture.OrgDomain = strPtr("example.com")
+		return c, posture, rec
+	}
+
+	_, posture, _ := collect(&mockClient{users: users, roles: roles, roleAssignments: toGroup, userRoleAssignments: map[string][]googleworkspace.RoleAssignment{"u2": toGroup}})
+	wantInt(t, "PrivilegedUsersCount", posture.ToIDPPosture().PrivilegedAccess.PrivilegedUsersCount, 2)
+	if got := posture.Admins.Inventory[1].Roles; !slices.Equal(got, []string{"Helpdesk"}) {
+		t.Errorf("helpdesk roles = %q, want Helpdesk", got)
+	}
+
+	c, posture, rec := collect(&mockClient{users: users, roles: roles, roleAssignments: toGroup, userRoleAssignmentsErr: errors.New("refused")})
+	pa := posture.ToIDPPosture().PrivilegedAccess
+	c.recordIDPPostureGaps(posture, componentsdk.LevelAudit)
+	if pa.PrivilegedUsersCount != nil {
+		t.Errorf("PrivilegedUsersCount = %d, want it left out", *pa.PrivilegedUsersCount)
+	}
+	var partial bool
+	for _, g := range rec.Gaps() {
+		if g.Path == idpPosturePath && g.Pointer == "/privileged_access/privileged_users_count" {
+			partial = g.Status == componentsdk.GapPartial && g.Unmeasured == 1
+		}
+	}
+	if !partial {
+		t.Errorf("no partial gap with 1 unmeasured at privileged_users_count; gaps = %+v", rec.Gaps())
+	}
+	if posture.Admins.Inventory[1].Roles != nil || !hasGap(rec, "/admins/inventory/1/roles") {
+		t.Errorf("helpdesk roles = %q, want them left out with a gap", posture.Admins.Inventory[1].Roles)
 	}
 }
 

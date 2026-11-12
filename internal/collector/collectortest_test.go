@@ -21,6 +21,7 @@ var kitOperations = []string{
 	googleworkspace.OpUsersList,
 	googleworkspace.OpRolesList,
 	googleworkspace.OpRoleAssignmentsList,
+	googleworkspace.OpUserAssignmentsList,
 	googleworkspace.OpAccessEventsList,
 	googleworkspace.OpAccessPoliciesList,
 	googleworkspace.OpAccessLevelsList,
@@ -179,6 +180,27 @@ func kitSuite() collectortest.Suite {
 						"/policy/mfa_required_coverage_pct":              collectortest.Absent,
 					},
 				},
+			},
+			{
+				// The delegated admin's role is assigned to a group they
+				// are in, so they are privileged as in the clean tenant.
+				Name:      "delegated admin with a role through a group",
+				Responses: groupRoleTenant().withCustomerKey(),
+				Expect: map[string]map[string]any{
+					detailedPath:   {"/admins/inventory/1/roles/0": "Helpdesk Lite"},
+					idpPosturePath: {"/privileged_access/privileged_users_count": 2},
+				},
+			},
+			{
+				// The iPhone counts as neither compliant nor non-compliant.
+				Name:      "mobile device with no compromise status",
+				Responses: noCompromiseStatusTenant().withCustomerKey(),
+				Expect: map[string]map[string]any{detailedPath: {
+					"/endpoint/compliant_by_os/ANDROID": 1,
+					"/endpoint/compliant_by_os/IOS":     nil,
+					"/endpoint/non_compliant_by_os/IOS": nil,
+					"/endpoint/inventory/1/compliant":   nil,
+				}},
 			},
 			{
 				Name:      "usage report behind the Directory",
@@ -363,7 +385,7 @@ func oidcSuite() collectortest.Suite {
 	s.Insensitive = tokenOps
 	s.Operations = append(append([]string(nil), tokenOps...),
 		googleworkspace.OpCustomersGet, googleworkspace.OpUsageReportGet, googleworkspace.OpUsersList,
-		googleworkspace.OpRolesList, googleworkspace.OpRoleAssignmentsList,
+		googleworkspace.OpRolesList, googleworkspace.OpUserAssignmentsList,
 		googleworkspace.OpAccessEventsList, googleworkspace.OpPoliciesList,
 		googleworkspace.OpSAMLProfilesList, googleworkspace.OpSSOAssignmentsList,
 	)

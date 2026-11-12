@@ -17,6 +17,7 @@ const (
 	OpUsersList           = "directory.users.list"
 	OpRolesList           = "directory.roles.list"
 	OpRoleAssignmentsList = "directory.role_assignments.list"
+	OpUserAssignmentsList = "directory.user_role_assignments.list"
 	OpGroupsList          = "directory.groups.list"
 	OpMembersList         = "directory.members.list"
 	OpOrgUnitsList        = "directory.orgunits.list"

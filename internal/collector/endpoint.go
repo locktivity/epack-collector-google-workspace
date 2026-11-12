@@ -11,7 +11,9 @@ import (
 // scanEndpoint collects the Endpoint surface (audit and above) across mobile and
 // Chrome OS devices. Audit emits device counts by OS, the not-synced-30d count,
 // and per-OS compliant / non-compliant breakdowns; internal adds per-device rows
-// (capped, sorted by last sync descending). Device serials / IMEIs are never
+// (capped, sorted by last sync descending). A mobile device Google reports no
+// compromise status for counts as neither compliant nor non-compliant, and
+// the breakdowns get a partial gap. Device serials / IMEIs are never
 // collected. Returns nil at trust or when either device list fails: counts
 // over one platform would read as the whole fleet.
 func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint {
@@ -52,6 +54,7 @@ func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint
 	}
 
 	var inventory []EndpointDevice
+	var noVerdict int
 	for _, d := range devices {
 		result.Total++
 		result.ManagedByOS[d.OS]++
@@ -59,9 +62,12 @@ func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint
 			result.NotSynced30d++
 		}
 		if collectInventory {
-			if d.Compliant {
+			switch {
+			case d.Compliant == nil:
+				noVerdict++
+			case *d.Compliant:
 				result.CompliantByOS[d.OS]++
-			} else {
+			default:
 				result.NonCompliantByOS[d.OS]++
 			}
 		}
@@ -83,10 +89,19 @@ func (c *Collector) scanEndpoint(ctx context.Context, scope scanScope) *Endpoint
 		}
 	}
 
+	noStatus := failed(invalidResponse("Google reported no compromise status for a mobile device"))
+	if noVerdict > 0 {
+		c.gaps.partial(noVerdict, noStatus, "/endpoint/compliant_by_os", "/endpoint/non_compliant_by_os")
+	}
 	if includeRows {
 		result.Inventory, result.TruncatedDropped, result.Truncated = truncateAndWarn(c, inventory, EndpointDevicesCap, "endpoint device inventory", "/endpoint/inventory", func(a, b EndpointDevice) bool {
 			return a.LastSync > b.LastSync
 		})
+		for i, row := range result.Inventory {
+			if row.Compliant == nil {
+				c.gaps.leaveOut(noStatus, itemPointer("/endpoint/inventory", i, "compliant"))
+			}
+		}
 	}
 	return result
 }

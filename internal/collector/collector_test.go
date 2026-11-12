@@ -43,6 +43,10 @@ type mockClient struct {
 	rolesErr           error
 	roleAssignments    []googleworkspace.RoleAssignment
 	roleAssignmentsErr error
+	// userRoleAssignments answers ListUserRoleAssignments by user ID. When
+	// it is nil, each user holds their roleAssignments.
+	userRoleAssignments    map[string][]googleworkspace.RoleAssignment
+	userRoleAssignmentsErr error
 
 	groups            []googleworkspace.Group
 	groupsErr         error
@@ -147,6 +151,24 @@ func (m *mockClient) ListRoleAssignments(ctx context.Context, customerID string,
 		return nil
 	}
 	return callback(m.roleAssignments)
+}
+
+func (m *mockClient) ListUserRoleAssignments(ctx context.Context, customerID, userKey string, callback func([]googleworkspace.RoleAssignment) error) error {
+	if m.userRoleAssignmentsErr != nil {
+		return m.userRoleAssignmentsErr
+	}
+	held := m.userRoleAssignments[userKey]
+	if m.userRoleAssignments == nil {
+		for _, a := range m.roleAssignments {
+			if a.AssignedTo == userKey {
+				held = append(held, a)
+			}
+		}
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	return callback(held)
 }
 
 func (m *mockClient) ListOrgUnits(ctx context.Context, customerID string) ([]googleworkspace.OrgUnit, error) {
@@ -880,11 +902,11 @@ func TestCollect_EndpointByLevel(t *testing.T) {
 			usageReport: googleworkspace.CustomerUsageReport{NumUsers: 3},
 			users:       []googleworkspace.User{{PrimaryEmail: "u@example.com", LastLoginTime: now}},
 			mobileDevices: []googleworkspace.Device{
-				{Platform: "MOBILE", OS: "ANDROID", OSVersion: "14", Model: "Pixel", OwnerEmail: "u@example.com", Compliant: true, Encrypted: true, ScreenLockEnforced: true, LastSync: now.AddDate(0, 0, -2)},
-				{Platform: "MOBILE", OS: "IOS", Model: "iPhone", OwnerEmail: "v@example.com", Compliant: false, LastSync: now.AddDate(0, 0, -60)},
+				{Platform: "MOBILE", OS: "ANDROID", OSVersion: "14", Model: "Pixel", OwnerEmail: "u@example.com", Compliant: boolPtr(true), Encrypted: true, ScreenLockEnforced: true, LastSync: now.AddDate(0, 0, -2)},
+				{Platform: "MOBILE", OS: "IOS", Model: "iPhone", OwnerEmail: "v@example.com", Compliant: boolPtr(false), LastSync: now.AddDate(0, 0, -60)},
 			},
 			chromeDevices: []googleworkspace.Device{
-				{Platform: "CHROME_OS", OS: "CHROME_OS", OSVersion: "120", Compliant: true, Encrypted: true, LastSync: now.AddDate(0, 0, -1)},
+				{Platform: "CHROME_OS", OS: "CHROME_OS", OSVersion: "120", Compliant: boolPtr(true), Encrypted: true, LastSync: now.AddDate(0, 0, -1)},
 			},
 		}
 	}
@@ -949,6 +971,46 @@ func TestCollect_EndpointByLevel(t *testing.T) {
 			t.Fatalf("internal inventory missing the Chrome OS device")
 		}
 	})
+}
+
+// A mobile device Google reports no compromise status for counts as neither
+// compliant nor non-compliant. The breakdowns get a partial gap, and the
+// device's row leaves compliant out.
+func TestCollect_EndpointLeavesOutADeviceWithNoCompromiseStatus(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	rec := &componentsdk.Recorder{}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Recorder: rec, Now: func() time.Time { return now }}, &mockClient{
+		customer:    googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+		usageReport: googleworkspace.CustomerUsageReport{NumUsers: 2},
+		users:       []googleworkspace.User{{PrimaryEmail: "u@example.com", LastLoginTime: now}},
+		mobileDevices: []googleworkspace.Device{
+			{Platform: "MOBILE", OS: "ANDROID", Compliant: boolPtr(true), LastSync: now},
+			{Platform: "MOBILE", OS: "IOS", LastSync: now},
+		},
+	})
+	posture, err := c.Collect(context.Background(), componentsdk.LevelInternal)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	e := posture.Endpoint
+	if len(e.CompliantByOS) != 1 || e.CompliantByOS["ANDROID"] != 1 || len(e.NonCompliantByOS) != 0 {
+		t.Fatalf("compliant = %v, non-compliant = %v; want only the Android device, as compliant", e.CompliantByOS, e.NonCompliantByOS)
+	}
+	if e.Inventory[1].Compliant != nil {
+		t.Fatalf("iPhone row compliant = %t, want it left out", *e.Inventory[1].Compliant)
+	}
+	gaps := map[string]componentsdk.Gap{}
+	for _, g := range rec.Gaps() {
+		gaps[g.Pointer] = g
+	}
+	for _, pointer := range []string{"/endpoint/compliant_by_os", "/endpoint/non_compliant_by_os"} {
+		if g := gaps[pointer]; g.Status != componentsdk.GapPartial || g.Unmeasured != 1 || g.Code != componentsdk.CodeInvalidResponse {
+			t.Errorf("gap at %s = %+v, want a partial invalid_response gap with 1 unmeasured", pointer, g)
+		}
+	}
+	if g := gaps["/endpoint/inventory/1/compliant"]; g.Status != componentsdk.GapNotCollected || g.Code != componentsdk.CodeInvalidResponse {
+		t.Errorf("gap at /endpoint/inventory/1/compliant = %+v, want an invalid_response gap", g)
+	}
 }
 
 func TestCollect_AuditSurfacesByLevel(t *testing.T) {
