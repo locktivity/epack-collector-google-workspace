@@ -21,6 +21,7 @@ var operationPermissions = map[string]string{
 	OpUsersList:           admin.AdminDirectoryUserReadonlyScope,
 	OpRolesList:           admin.AdminDirectoryRolemanagementReadonlyScope,
 	OpRoleAssignmentsList: admin.AdminDirectoryRolemanagementReadonlyScope,
+	OpUserAssignmentsList: admin.AdminDirectoryRolemanagementReadonlyScope,
 	OpGroupsList:          admin.AdminDirectoryGroupReadonlyScope,
 	OpMembersList:         admin.AdminDirectoryGroupMemberReadonlyScope,
 	OpOrgUnitsList:        admin.AdminDirectoryOrgunitReadonlyScope,

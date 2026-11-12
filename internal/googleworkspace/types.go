@@ -243,7 +243,7 @@ type Device struct {
 	Model              string
 	OwnerEmail         string
 	Status             string
-	Compliant          bool
+	Compliant          *bool // nil when a mobile device reports no compromise status
 	Encrypted          bool
 	ScreenLockEnforced bool
 	LastSync           time.Time
@@ -292,6 +292,7 @@ type Client interface {
 	ListUsers(ctx context.Context, customerKey string, callback func([]User) error) error
 	ListRoles(ctx context.Context, customerID string, callback func([]Role) error) error
 	ListRoleAssignments(ctx context.Context, customerID string, callback func([]RoleAssignment) error) error
+	ListUserRoleAssignments(ctx context.Context, customerID, userKey string, callback func([]RoleAssignment) error) error
 	ListGroups(ctx context.Context, customerID string, callback func([]Group) error) error
 	GetGroupSettings(ctx context.Context, groupEmail string) (GroupSettings, error)
 	ListGroupMembers(ctx context.Context, groupEmail string, callback func([]GroupMember) error) error

@@ -33,7 +33,7 @@ func (c *APIClient) ListMobileDevices(ctx context.Context, customerID string, ca
 				OSVersion:          d.Os,
 				Model:              d.Model,
 				Status:             d.Status,
-				Compliant:          d.DeviceCompromisedStatus == "" || strings.EqualFold(d.DeviceCompromisedStatus, "No compromise detected"),
+				Compliant:          compromiseVerdict(d.DeviceCompromisedStatus),
 				Encrypted:          strings.EqualFold(d.EncryptionStatus, "encrypted"),
 				ScreenLockEnforced: strings.EqualFold(d.DevicePasswordStatus, "on"),
 			}
@@ -53,6 +53,16 @@ func (c *APIClient) ListMobileDevices(ctx context.Context, customerID string, ca
 		return callback(devices)
 	})
 	return listError(OpMobileDevicesList, "listing mobile devices", err)
+}
+
+// compromiseVerdict is whether a mobile device with this compromise status
+// counts as compliant, or nil when Google reported none for the device.
+func compromiseVerdict(status string) *bool {
+	if status == "" {
+		return nil
+	}
+	compliant := strings.EqualFold(status, "No compromise detected")
+	return &compliant
 }
 
 // mobileOS returns a normalized OS family for a mobile device. The directory
@@ -91,6 +101,7 @@ func (c *APIClient) ListChromeOSDevices(ctx context.Context, customerID string, 
 			if d == nil {
 				continue
 			}
+			active := strings.EqualFold(d.Status, "active")
 			device := Device{
 				Platform:   "CHROME_OS",
 				OS:         "CHROME_OS",
@@ -98,7 +109,7 @@ func (c *APIClient) ListChromeOSDevices(ctx context.Context, customerID string, 
 				Model:      d.Model,
 				OwnerEmail: annotatedEmail(d.AnnotatedUser),
 				Status:     d.Status,
-				Compliant:  strings.EqualFold(d.Status, "active"),
+				Compliant:  &active,
 				Encrypted:  true, // Chrome OS storage is always encrypted.
 			}
 			if ts, err := time.Parse(time.RFC3339, d.LastSync); err == nil {

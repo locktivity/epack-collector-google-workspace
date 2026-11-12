@@ -305,7 +305,7 @@ type EndpointDevice struct {
 	OSVersion          string `json:"os_version,omitempty"`
 	Model              string `json:"model,omitempty"`
 	OwnerEmail         string `json:"owner_email,omitempty"`
-	Compliant          bool   `json:"compliant"`
+	Compliant          *bool  `json:"compliant"`
 	Encrypted          bool   `json:"encrypted"`
 	ScreenLockEnforced bool   `json:"screen_lock_enforced"`
 	LastSync           string `json:"last_sync,omitempty"`
