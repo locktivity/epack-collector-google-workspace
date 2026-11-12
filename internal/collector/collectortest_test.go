@@ -164,6 +164,27 @@ func kitSuite() collectortest.Suite {
 				},
 			},
 			{
+				Name:      "partial usage report for the newest date",
+				Responses: partialReportTenant().responses(),
+				Expect: map[string]map[string]any{
+					detailedPath: {
+						"/usage_report_date":                  "2026-04-06",
+						"/authentication/security_keys_total": 2,
+						"/authentication/passkey_users_pct":   12.5,
+					},
+					idpPosturePath: {"/user_security/mfa_phishing_resistant_pct": 12},
+				},
+			},
+			{
+				Name:      "partial usage report for every date",
+				Responses: allPartialReportsTenant().responses(),
+				Expect: map[string]map[string]any{detailedPath: {
+					"/usage_report_date":                  nil,
+					"/users/total":                        nil,
+					"/authentication/security_keys_total": nil,
+				}},
+			},
+			{
 				Name:      "session controls refused for a token without the scope",
 				Responses: sessionScopeDeniedTenant().withCustomerKey(),
 				Expect: map[string]map[string]any{

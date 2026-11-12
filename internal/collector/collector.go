@@ -173,8 +173,8 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 	// Step 2: Fetch usage report from Reports API.
 	// Google Workspace usage reports have a 2-3 day lag. We try progressively
-	// older dates starting from yesterday (Pacific Time) until we find one
-	// that has data, or exhaust our attempts.
+	// older dates starting from yesterday (Pacific Time) until we find a
+	// complete one, or exhaust our attempts.
 	report, reportDate, reportErr := c.fetchUsageReport(ctx, scope.customerID, collectedAt)
 	if reportErr != nil {
 		c.warnSurfaceScan("usage_report", "admin.reports.usage.readonly", "a role with the Reports privilege (or Super Admin)", reportErr)
@@ -834,15 +834,17 @@ func levelExplicitlyRequiresManagedDevice(level googleworkspace.AccessLevel) boo
 const maxReportRetries = 10
 
 // fetchUsageReport tries progressively older report dates (yesterday minus 0..9
-// extra days in Pacific Time) until it finds one with data. Google Workspace
-// usage reports typically lag 2-3 days behind the current date.
+// extra days in Pacific Time) until it finds a complete report. Google
+// Workspace usage reports typically lag 2-3 days behind the current date.
 //
-// The Reports API can signal "no data" in two ways:
+// A date has no complete report when the Reports API answers with one of:
 //   - HTTP 400 with "not yet available" (caught as an error)
 //   - HTTP 200 with a "data is not available" warning
+//   - HTTP 200 with a partial-data warning
 //
-// Both are treated as retryable. A "partial data is available" warning is
-// surfaced as a diagnostic but the report is still used.
+// The collector tries an older date in each case. Passkey users and security
+// keys can be 0 in a partial report for a tenant that has them, so a partial
+// report is never used.
 func (c *Collector) fetchUsageReport(ctx context.Context, customerID string, collectedAt time.Time) (googleworkspace.CustomerUsageReport, string, error) {
 	for i := range maxReportRetries {
 		date := reportDateFor(collectedAt, 1+i)
@@ -862,10 +864,9 @@ func (c *Collector) fetchUsageReport(ctx context.Context, customerID string, col
 			c.warn("usage report for %s returned a 'data not available' warning; trying an older date", date)
 			continue
 		}
-		for _, w := range report.Warnings {
-			if isPartialDataWarning(w) {
-				c.warn("usage report for %s returned a partial-data warning: %s", date, w.Message)
-			}
+		if slices.ContainsFunc(report.Warnings, isPartialDataWarning) {
+			c.warn("usage report for %s is partial; trying an older date", date)
+			continue
 		}
 
 		if i > 0 {
@@ -874,7 +875,7 @@ func (c *Collector) fetchUsageReport(ctx context.Context, customerID string, col
 		return report, date, nil
 	}
 
-	return googleworkspace.CustomerUsageReport{}, "", componentsdk.CodeError(componentsdk.CodeVendorError, fmt.Errorf("no usage report available for the last %d days", maxReportRetries))
+	return googleworkspace.CustomerUsageReport{}, "", componentsdk.CodeError(componentsdk.CodeVendorError, fmt.Errorf("no complete usage report for the last %d days", maxReportRetries))
 }
 
 // isDataNotYetAvailable checks whether a Google API error indicates the
@@ -911,7 +912,8 @@ func hasDataNotAvailableWarning(warnings []googleworkspace.ReportWarning) bool {
 }
 
 // isPartialDataWarning checks whether a warning says the report's data for
-// the date is partial. hasDataNotAvailableWarning lists the messages.
+// the date is partial. fetchUsageReport then tries an older date.
+// hasDataNotAvailableWarning lists the messages.
 func isPartialDataWarning(w googleworkspace.ReportWarning) bool {
 	return strings.Contains(w.Message, "not available right now") || strings.Contains(w.Message, "Partial data")
 }

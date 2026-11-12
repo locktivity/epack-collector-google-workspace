@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -339,6 +340,38 @@ func lessSecureAppsBlockedTenant() kitTenant {
 	t := cleanTenant()
 	t.lessSecureApps = `{"policies":[{"name":"policies/eee","type":"SYSTEM","setting":{"type":"settings/security.less_secure_apps","value":{}}}]}`
 	return t
+}
+
+// partialReportTenant has a partial usage report for the newest date, with 0
+// passkey users and 0 security keys. The complete report for the day before
+// has both.
+func partialReportTenant() kitTenant {
+	t := cleanTenant()
+	t.reports[0] = kitReport{date: "2026-04-07", body: partialUsageReport("2026-04-07", map[string]int{
+		"accounts:num_users": 8, "accounts:num_suspended_users": 1, "accounts:num_archived_users": 1,
+		"accounts:num_users_2sv_protected": 4, "accounts:num_users_with_passkeys_enrolled": 0,
+		"accounts:num_security_keys": 0, "accounts:num_authorized_apps": 5,
+	})}
+	return t
+}
+
+// allPartialReportsTenant has a partial usage report for every date the
+// collector tries.
+func allPartialReportsTenant() kitTenant {
+	t := cleanTenant()
+	t.reports = nil
+	for day := 1; day <= maxReportRetries; day++ {
+		date := reportDateFor(kitNow, day)
+		t.reports = append(t.reports, kitReport{date: date, body: partialUsageReport(date, map[string]int{"accounts:num_users": 8})})
+	}
+	return t
+}
+
+// partialUsageReport is a usage report with the values and the partial-data
+// warning the Reports API reference gives for date.
+func partialUsageReport(date string, values map[string]int) string {
+	warning := `{"code":"PARTIAL_DATA_AVAILABLE","message":"Data for date ` + date + ` for application \"accounts\" is not available right now, please try again after a few hours."}`
+	return strings.Replace(usageReport(values), `{"kind":"admin#reports#usageReports",`, `{"kind":"admin#reports#usageReports","warnings":[`+warning+`],`, 1)
 }
 
 func usageReport(values map[string]int) string {
