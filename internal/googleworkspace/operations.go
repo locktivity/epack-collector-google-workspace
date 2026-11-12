@@ -28,6 +28,7 @@ const (
 	OpAccessEventsList    = "reports.context_aware_access.list"
 	OpGroupSettingsGet    = "groupssettings.groups.get"
 	OpSAMLProfilesList    = "cloudidentity.saml_profiles.list"
+	OpSSOAssignmentsList  = "cloudidentity.sso_assignments.list"
 	OpPoliciesList        = "cloudidentity.policies.list"
 	OpAccessPoliciesList  = "accesscontextmanager.access_policies.list"
 	OpAccessLevelsList    = "accesscontextmanager.access_levels.list"

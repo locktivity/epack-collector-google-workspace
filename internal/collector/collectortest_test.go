@@ -33,6 +33,7 @@ var kitOperations = []string{
 	googleworkspace.OpActivitiesList,
 	googleworkspace.OpDomainsList,
 	googleworkspace.OpSAMLProfilesList,
+	googleworkspace.OpSSOAssignmentsList,
 	googleworkspace.OpPoliciesList,
 	googleworkspace.OpVaultMattersList,
 	googleworkspace.OpVaultHoldsList,
@@ -54,6 +55,16 @@ func kitSecrets() map[string]string {
 // Access Context Manager, and Vault leave an empty list out of the answer.
 // positions limits expect to faults at those positions, as Semantic's
 // Positions does.
+// noSSOAssignments is the SSO assignments call answered with no
+// assignments. Every user then signs in with Google, so the MFA values are
+// written.
+var noSSOAssignments = collectortest.Semantic{
+	Operation: googleworkspace.OpSSOAssignmentsList,
+	Fault:     "empty-object",
+	Meaning:   "no org unit or group signs in through a SAML profile",
+	Expect:    map[string]map[string]any{idpPosturePath: {"/policy/mfa_required_coverage_pct": 33}},
+}
+
 func emptyList(op, meaning string, expect map[string]any, positions ...string) collectortest.Semantic {
 	return collectortest.Semantic{
 		Operation: op,
@@ -107,19 +118,27 @@ func kitSuite() collectortest.Suite {
 				Name:      "clean",
 				Responses: cleanTenant().withCustomerKey(),
 				// The normalized percentages are whole numbers, rounded down
-				// where more is better and up where more is worse.
+				// where more is better and up where more is worse. One org
+				// unit signs in through Okta, which decides its MFA, so the
+				// MFA values are left out. The delegated admin's role can
+				// update users, so they are privileged, and Okta could
+				// decide their MFA too.
 				Expect: map[string]map[string]any{idpPosturePath: {
-					"/user_security/users_present":                true,
-					"/user_security/user_count":                   6,
-					"/user_security/inactive_pct":                 34,
-					"/user_security/weak_password_pct":            13,
-					"/policy/mfa_required_coverage_pct":           33,
-					"/privileged_access/privileged_users_present": true,
-					"/lifecycle/account_count":                    8,
-					"/policy/minimum_password_length":             collectortest.Absent,
-					"/app_security/sso_coverage_pct":              collectortest.Absent,
-					"/policy/session_lifetime_max_min":            20160,
-					"/policy/legacy_auth_blocked":                 collectortest.Absent,
+					"/user_security/users_present":                   true,
+					"/user_security/user_count":                      6,
+					"/user_security/inactive_pct":                    34,
+					"/user_security/weak_password_pct":               13,
+					"/user_security/mfa_coverage_pct":                collectortest.Absent,
+					"/policy/mfa_required":                           collectortest.Absent,
+					"/policy/mfa_required_coverage_pct":              collectortest.Absent,
+					"/privileged_access/privileged_users_present":    true,
+					"/privileged_access/privileged_users_count":      2,
+					"/privileged_access/privileged_mfa_coverage_pct": collectortest.Absent,
+					"/lifecycle/account_count":                       8,
+					"/policy/minimum_password_length":                collectortest.Absent,
+					"/app_security/sso_coverage_pct":                 collectortest.Absent,
+					"/policy/session_lifetime_max_min":               20160,
+					"/policy/legacy_auth_blocked":                    collectortest.Absent,
 				}},
 			},
 			{
@@ -144,6 +163,22 @@ func kitSuite() collectortest.Suite {
 					"/device_access/access_context_manager": nil,
 					"/sign_in":                              nil,
 				}},
+			},
+			{
+				// The delegated admin's role can only read, so the super
+				// admin is the one privileged user. Super admins sign in
+				// with Google, so the privileged MFA values are written
+				// though one org unit signs in through Okta.
+				Name:      "delegated admin with a read-only role",
+				Responses: readOnlyAdminTenant().withCustomerKey(),
+				Expect: map[string]map[string]any{
+					detailedPath: {"/admins/privileged_users_count": 2, "/admins/delegated_admin_count": 1},
+					idpPosturePath: {
+						"/privileged_access/privileged_users_count":      1,
+						"/privileged_access/privileged_mfa_coverage_pct": 100,
+						"/policy/mfa_required_coverage_pct":              collectortest.Absent,
+					},
+				},
 			},
 			{
 				Name:      "usage report behind the Directory",
@@ -243,6 +278,7 @@ func kitSuite() collectortest.Suite {
 			emptyList(googleworkspace.OpSAMLProfilesList, "no SAML profile is configured", map[string]any{
 				"/domain_settings/sso_configured": false, "/domain_settings/saml_profile_count": 0,
 			}),
+			noSSOAssignments,
 			emptyList(googleworkspace.OpPoliciesList, "the Policy API returns no policy of the setting type asked for", map[string]any{
 				"/passwords/policy": nil, "/sign_in": nil,
 			}, collectortest.PositionAll),
@@ -327,8 +363,18 @@ func oidcSuite() collectortest.Suite {
 	s.Insensitive = tokenOps
 	s.Operations = append(append([]string(nil), tokenOps...),
 		googleworkspace.OpCustomersGet, googleworkspace.OpUsageReportGet, googleworkspace.OpUsersList,
+		googleworkspace.OpRolesList, googleworkspace.OpRoleAssignmentsList,
 		googleworkspace.OpAccessEventsList, googleworkspace.OpPoliciesList,
+		googleworkspace.OpSAMLProfilesList, googleworkspace.OpSSOAssignmentsList,
 	)
+	// A trust run writes no domain settings, so no SAML profile shows as
+	// the MFA values every user's Google sign-in gives.
+	s.Semantics = slices.DeleteFunc(slices.Clone(s.Semantics), func(sem collectortest.Semantic) bool {
+		return sem.Operation == googleworkspace.OpSAMLProfilesList
+	})
+	noProfiles := noSSOAssignments
+	noProfiles.Operation, noProfiles.Meaning = googleworkspace.OpSAMLProfilesList, "no SAML profile is configured"
+	s.Semantics = append(s.Semantics, noProfiles)
 	s.Faults = nil
 	return s
 }

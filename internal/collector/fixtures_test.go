@@ -81,6 +81,7 @@ const (
 	fieldsAccessEvents    = "kind,nextPageToken,items(actor/email,id/time,events(name,parameters(name,value,multiValue,intValue,boolValue)))"
 	fieldsActivities      = "kind,nextPageToken,items(actor/email,ipAddress,id/time,id/applicationName,events(name,parameters(name,value,multiValue,intValue,boolValue)))"
 	fieldsSAMLProfiles    = "nextPageToken,inboundSamlSsoProfiles(name,displayName,idpConfig(entityId,singleSignOnServiceUri))"
+	fieldsSSOAssignments  = "nextPageToken,inboundSsoAssignments(ssoMode,samlSsoInfo(inboundSamlSsoProfile),targetOrgUnit,targetGroup)"
 	fieldsAccessPolicies  = "nextPageToken,accessPolicies(name,parent,title)"
 	fieldsAccessLevels    = "nextPageToken,accessLevels(name,title,basic(combiningFunction,conditions(negate,ipSubnetworks,regions,requiredAccessLevels,devicePolicy(allowedDeviceManagementLevels,allowedEncryptionStatuses,osConstraints,requireAdminApproval,requireCorpOwned,requireScreenlock))),custom)"
 	fieldsVaultMatters    = "nextPageToken,matters(matterId,name,state)"
@@ -124,6 +125,7 @@ type kitTenant struct {
 	activities        map[string]map[string]string
 	domains           string
 	samlProfiles      string
+	ssoAssignments    string
 	passwordPolicies  string
 	sessionPolicies   string
 	sessionStatus     int
@@ -137,6 +139,10 @@ type kitReport struct {
 	status int
 	body   string
 }
+
+// kitNoSSOAssignments answers the SSO assignments call for a tenant where
+// every user signs in with Google.
+const kitNoSSOAssignments = `{}`
 
 func cleanTenant() kitTenant {
 	return kitTenant{
@@ -228,6 +234,8 @@ func cleanTenant() kitTenant {
 		},
 		domains:      `{"kind":"admin#directory#domains","domains":[{"domainName":"example.com","verified":true,"isPrimary":true},{"domainName":"example.net","verified":true,"isPrimary":false}]}`,
 		samlProfiles: `{"inboundSamlSsoProfiles":[{"name":"inboundSamlSsoProfiles/abc","displayName":"Okta","idpConfig":{"entityId":"https://idp.example.com/entity","singleSignOnServiceUri":"https://idp.example.com/sso/saml?tenant=1"}}]}`,
+		// One org unit signs in through the Okta profile.
+		ssoAssignments: `{"inboundSsoAssignments":[{"ssoMode":"SAML_SSO","samlSsoInfo":{"inboundSamlSsoProfile":"inboundSamlSsoProfiles/abc"},"targetOrgUnit":"orgUnits/03ph8a2z1"}]}`,
 		passwordPolicies: `{"policies":[
 			{"name":"policies/aaa","customer":"customers/C123","type":"ADMIN","policyQuery":{"orgUnit":"orgUnits/03ph8a2z1"},"setting":{"type":"settings/security.password","value":{"minimumLength":12,"maximumLength":100,"allowedStrength":"STRONG","enforceRequirementsAtLogin":true,"allowReuse":false,"expirationDuration":"7776000s"}}},
 			{"name":"policies/bbb","customer":"customers/C123","type":"ADMIN","setting":{"type":"settings/security.password","value":{"minimumLength":8,"maximumLength":64,"allowedStrength":"WEAK","allowReuse":true}}}
@@ -282,8 +290,17 @@ func emptyTenant() kitTenant {
 // reportLagTenant replays the 2SV enrollment incident: the usage report, two
 // days behind, counts six of seven users enrolled, while the Directory shows
 // the seventh enrolled since.
+// readOnlyAdminTenant is the clean tenant with the delegated admin's role
+// able only to retrieve users.
+func readOnlyAdminTenant() kitTenant {
+	t := cleanTenant()
+	t.roles = strings.Replace(t.roles, `{"privilegeName":"USERS_UPDATE","serviceId":"00haapch16h1ysv"}`, `{"privilegeName":"ORGANIZATION_UNITS_RETRIEVE","serviceId":"00haapch16h1ysv"}`, 1)
+	return t
+}
+
 func reportLagTenant() kitTenant {
 	t := cleanTenant()
+	t.ssoAssignments = kitNoSSOAssignments
 	t.reports = []kitReport{{date: "2026-04-07", body: usageReport(map[string]int{
 		"accounts:num_users": 7, "accounts:num_suspended_users": 0, "accounts:num_archived_users": 0,
 		"accounts:num_7day_logins": 6, "accounts:num_30day_logins": 7,
@@ -347,6 +364,7 @@ func lessSecureAppsBlockedTenant() kitTenant {
 // has both.
 func partialReportTenant() kitTenant {
 	t := cleanTenant()
+	t.ssoAssignments = kitNoSSOAssignments
 	t.reports[0] = kitReport{date: "2026-04-07", body: partialUsageReport("2026-04-07", map[string]int{
 		"accounts:num_users": 8, "accounts:num_suspended_users": 1, "accounts:num_archived_users": 1,
 		"accounts:num_users_2sv_protected": 4, "accounts:num_users_with_passkeys_enrolled": 0,
@@ -434,6 +452,7 @@ func (t kitTenant) responses() []collectortest.Response {
 		get(apiURL(kitDirectory, "/customer/"+dc+"/devices/chromeos", url.Values{"maxResults": {"100"}, "projection": {"BASIC"}, "fields": {fieldsChromeOS}}), t.chromeOSDevices),
 		get(apiURL(kitDirectory, "/customer/"+dc+"/domains", url.Values{"fields": {fieldsDomains}}), t.domains),
 		get(apiURL(kitCloudIdentity, "/inboundSamlSsoProfiles", url.Values{"pageSize": {"100"}, "fields": {fieldsSAMLProfiles}}), t.samlProfiles),
+		get(apiURL(kitCloudIdentity, "/inboundSsoAssignments", url.Values{"pageSize": {"100"}, "fields": {fieldsSSOAssignments}}), t.ssoAssignments),
 		get(apiURL(kitCloudIdentity, "/policies", url.Values{
 			"filter":   {`setting.type.matches('^settings/security.password$') && customer == "customers/` + dc + `"`},
 			"pageSize": {"100"},

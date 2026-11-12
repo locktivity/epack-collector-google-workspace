@@ -65,6 +65,8 @@ type mockClient struct {
 
 	samlProfiles    []googleworkspace.SAMLProfile
 	samlProfilesErr error
+	ssoAssignments  []googleworkspace.SSOAssignment
+	ssoErr          error
 	domains         []googleworkspace.Domain
 	domainsErr      error
 
@@ -233,6 +235,16 @@ func (m *mockClient) ListSAMLProfiles(ctx context.Context, callback func([]googl
 		return nil
 	}
 	return callback(m.samlProfiles)
+}
+
+func (m *mockClient) ListSSOAssignments(ctx context.Context, callback func([]googleworkspace.SSOAssignment) error) error {
+	if m.ssoErr != nil {
+		return m.ssoErr
+	}
+	if len(m.ssoAssignments) == 0 {
+		return nil
+	}
+	return callback(m.ssoAssignments)
 }
 
 func (m *mockClient) ListDomains(ctx context.Context, customerID string) ([]googleworkspace.Domain, error) {
@@ -1165,7 +1177,7 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 		},
 		users: []googleworkspace.User{
 			{PrimaryEmail: "admin@example.com", IsAdmin: true, IsEnrolledIn2Sv: true, IsEnforcedIn2Sv: true, LastLoginTime: now},
-			{PrimaryEmail: "delegated@example.com", IsDelegatedAdmin: true, IsEnrolledIn2Sv: false, LastLoginTime: now},
+			{ID: "u-delegated", PrimaryEmail: "delegated@example.com", IsDelegatedAdmin: true, IsEnrolledIn2Sv: false, LastLoginTime: now},
 			{PrimaryEmail: "suspended-admin@example.com", IsAdmin: true, Suspended: true},
 			{PrimaryEmail: "archived-admin@example.com", IsDelegatedAdmin: true, Archived: true},
 			{PrimaryEmail: "active@example.com", LastLoginTime: now},
@@ -1175,6 +1187,8 @@ func TestCollect_IDPPostureOutput(t *testing.T) {
 		contextAwareAccessEvents: []googleworkspace.ContextAwareAccessEvent{
 			{UserEmail: "active@example.com", Application: "Drive", DeviceState: "Unmanaged"},
 		},
+		roles:           []googleworkspace.Role{{ID: "r1", Name: "User Management Admin", Privileges: []string{"USERS_ALL"}}},
+		roleAssignments: []googleworkspace.RoleAssignment{{AssignedTo: "u-delegated", RoleID: "r1", ScopeType: "CUSTOMER"}},
 	}
 
 	c := NewWithClient(Config{
@@ -1601,7 +1615,7 @@ func TestToIDPPosture_UsesUniquePrivilegedCount(t *testing.T) {
 			PrivilegedUsers2SVEnrolledPct: pctPtr(50.0),
 			PrivilegedUsers2SVEnforcedPct: pctPtr(75.0),
 		},
-		counts: postureCounts{privileged2SVEnrolled: intPtr(2)},
+		counts: postureCounts{privileged: intPtr(4), privileged2SVEnrolled: intPtr(2)},
 	}
 
 	idp := posture.ToIDPPosture()

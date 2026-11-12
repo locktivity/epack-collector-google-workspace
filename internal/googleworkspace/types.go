@@ -98,6 +98,16 @@ type SAMLProfile struct {
 	SSOServiceURI string
 }
 
+// SSOAssignment says how the users of an org unit or a group sign in.
+// SSOMode is SSO_OFF, SAML_SSO, or DOMAIN_WIDE_SAML_IF_ENABLED, and Profile
+// names the SAML profile a SAML_SSO assignment uses.
+type SSOAssignment struct {
+	SSOMode       string
+	Profile       string
+	TargetOrgUnit string
+	TargetGroup   string
+}
+
 // Domain captures a customer domain.
 type Domain struct {
 	DomainName string
@@ -179,6 +189,9 @@ type Role struct {
 	PrivilegeCount int
 	IsSystem       bool
 	IsSuperAdmin   bool
+	// Privileges are the names of the role's privileges, such as
+	// USERS_RETRIEVE.
+	Privileges []string
 }
 
 // RoleAssignment captures a single role grant to a user. ScopeType is
@@ -287,6 +300,7 @@ type Client interface {
 	ListChromeOSDevices(ctx context.Context, customerID string, callback func([]Device) error) error
 	ListActivities(ctx context.Context, customerID, applicationName string, eventNames []string, startTime time.Time, callback func([]AuditEvent) error) error
 	ListSAMLProfiles(ctx context.Context, callback func([]SAMLProfile) error) error
+	ListSSOAssignments(ctx context.Context, callback func([]SSOAssignment) error) error
 	ListDomains(ctx context.Context, customerID string) ([]Domain, error)
 	ListVaultMatters(ctx context.Context, callback func([]VaultMatter) error) error
 	ListVaultHolds(ctx context.Context, matterID string, callback func([]VaultHold) error) error

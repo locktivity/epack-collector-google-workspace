@@ -94,12 +94,12 @@ This key grants access to your tenant. Treat it as a credential.
 | Context-Aware Access (device_access) | `admin.reports.audit.readonly` | trust |
 | Password policy, web session length, less secure apps | `cloud-identity.policies.readonly` | trust |
 | Audit logs (admin, login, token, drive sharing) | `admin.reports.audit.readonly` | audit / internal |
-| Admin roles | `admin.directory.rolemanagement.readonly` | audit / internal |
+| Admin roles | `admin.directory.rolemanagement.readonly` | trust, when a delegated admin exists; audit / internal |
 | Groups | `admin.directory.group.readonly`, `admin.directory.group.member.readonly`, `apps.groups.settings` | audit / internal |
 | Org units | `admin.directory.orgunit.readonly` | audit / internal |
 | Endpoint (devices) | `admin.directory.device.mobile.readonly`, `admin.directory.device.chromeos.readonly` | audit / internal |
 | Domain settings | `admin.directory.domain.readonly` | audit / internal |
-| SSO (SAML profiles) | `cloud-identity.inboundsso.readonly` | audit / internal |
+| SSO (SAML profiles and SSO assignments) | `cloud-identity.inboundsso.readonly` | trust |
 | Vault (eDiscovery) | `ediscovery.readonly` | audit / internal (requires a Vault license) |
 
 All scopes as one comma-separated list, for pasting into the admin console:

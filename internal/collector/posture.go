@@ -105,18 +105,32 @@ type OrgPosture struct {
 	// counts holds the counts behind the percentages above. The normalized
 	// artifact's percentages are taken from them.
 	counts postureCounts
+
+	// thirdPartySSO is why the normalized MFA values are left out: some
+	// users sign in through a third-party SAML identity provider, or the
+	// SAML profiles or SSO assignments that would say could not be read. It
+	// is nil when every user signs in with Google.
+	thirdPartySSO *missing
 }
 
 // postureCounts holds the user counts that percentages are taken from. A
 // count is nil when the read that gives it failed, or when the usage report
 // left out its parameter or its total.
 type postureCounts struct {
-	// From the live Directory scan, out of Users.Active or, for the
-	// privileged count, out of Admins.PrivilegedUsersCount.
+	// From the live Directory scan, out of Users.Active or, for
+	// privileged2SVEnrolled, out of privileged.
 	inactiveUsers         *int
 	enrolled2SVUsers      *int
 	enforced2SVUsers      *int
 	privileged2SVEnrolled *int
+
+	// privileged counts the active super admins and the delegated admins
+	// with a role that can change users, groups, security, or settings.
+	// It is nil when the scan failed, or when privilegedUnread delegated
+	// admins' roles could not be read because of privilegedErr.
+	privileged       *int
+	privilegedUnread int
+	privilegedErr    error
 
 	// From the usage report, out of Users.Total.
 	passkeyUsers       *int
