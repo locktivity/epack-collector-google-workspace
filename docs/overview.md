@@ -287,6 +287,12 @@ Context-Aware Access deny evidence.
 | `managed_device_requirement_evidenced` | **Positive-only signal.** `true` means Google audit logs show device-state access levels firing somewhere in the tenant; it is not proof of full policy coverage, and monitor-mode events can look similar. |
 | `access_context_manager.*` | **Config enrichment.** Optional Google Cloud access-level summary that helps you see whether the org has basic device-policy access levels configured, even though Workspace-side app assignment is still API-thin. |
 
+## Not Collected
+
+Google offers the following through its APIs, and the collector does not read them.
+
+- **Desktop devices.** Windows, macOS and Linux devices in the Cloud Identity Devices API, with their encryption state and the antivirus and firewall signals from Endpoint Verification. The detailed artifact holds mobile and ChromeOS devices from the `audit` level. The collector writes no `endpoint-posture` file.
+
 ## Use Cases
 
 - **Third-Party Risk Assessment**: Share aggregated posture metrics under NDA without exposing user-level details
