@@ -2255,8 +2255,8 @@ func TestCollect_RetriesWhenResponseHasDataNotAvailableWarning(t *testing.T) {
 }
 
 // The partial-data message in the Reports API reference says the data "is not
-// available right now". Messages that start "Partial data" are surfaced too.
-func TestCollect_SurfacesPartialDataWarning(t *testing.T) {
+// available right now". Messages that start "Partial data" are matched too.
+func TestCollect_SkipsPartialReport(t *testing.T) {
 	for _, message := range []string{
 		`Data for date 2026-04-07 for application "accounts" is not available right now, please try again after a few hours.`,
 		"Partial data is available for date 2026-04-07 for application accounts.",
@@ -2265,10 +2265,18 @@ func TestCollect_SurfacesPartialDataWarning(t *testing.T) {
 			now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
 			client := &mockClient{
 				customer: googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
-				usageReport: googleworkspace.CustomerUsageReport{
-					Date:     "2026-04-07",
-					NumUsers: 25,
-					Warnings: []googleworkspace.ReportWarning{{Code: "200", Message: message}},
+				usageReportByDate: map[string]mockReportResult{
+					"2026-04-07": {report: googleworkspace.CustomerUsageReport{
+						Date:     "2026-04-07",
+						NumUsers: 7,
+						Warnings: []googleworkspace.ReportWarning{{Code: "200", Message: message}},
+					}},
+					"2026-04-06": {report: googleworkspace.CustomerUsageReport{
+						Date:                         "2026-04-06",
+						NumUsers:                     7,
+						NumUsersWithPasskeysEnrolled: 7,
+						NumSecurityKeys:              10,
+					}},
 				},
 				users: []googleworkspace.User{{PrimaryEmail: "user@example.com", LastLoginTime: now}},
 			}
@@ -2278,12 +2286,53 @@ func TestCollect_SurfacesPartialDataWarning(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Collect() error = %v", err)
 			}
-			wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-07")
-			wantInt(t, "Users.Total", posture.Users.Total, 25)
-			if !hasWarning(posture, "partial-data warning") {
-				t.Fatalf("warnings = %v, want the partial-data warning surfaced", warningsOf(posture))
+			wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-06")
+			wantInt(t, "Authentication.SecurityKeysTotal", posture.Authentication.SecurityKeysTotal, 10)
+			wantPct(t, "Authentication.PasskeyUsersPct", posture.Authentication.PasskeyUsersPct, 100)
+			if !hasWarning(posture, "usage report for 2026-04-07 is partial") {
+				t.Fatalf("warnings = %v, want the partial report named", warningsOf(posture))
 			}
 		})
+	}
+}
+
+func TestCollect_LeavesOutReportWhenNoDateIsComplete(t *testing.T) {
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	partial := func(date string) mockReportResult {
+		return mockReportResult{report: googleworkspace.CustomerUsageReport{
+			Date:     date,
+			NumUsers: 7,
+			Warnings: []googleworkspace.ReportWarning{{Code: "200", Message: "Data for date " + date + " for application accounts is not available right now, please try again after a few hours."}},
+		}}
+	}
+	client := &mockClient{
+		customer: googleworkspace.Customer{ID: "C123", PrimaryDomain: "example.com"},
+		usageReportByDate: map[string]mockReportResult{
+			"2026-04-07": partial("2026-04-07"),
+			"2026-04-04": partial("2026-04-04"),
+			"2026-03-29": partial("2026-03-29"),
+		},
+		// Every other date is not out yet.
+		usageReportErr: &googleapi.Error{Code: 400, Message: "Data for dates later than 2026-03-01 is not yet available. Please check back later"},
+		users:          []googleworkspace.User{{PrimaryEmail: "user@example.com", LastLoginTime: now}},
+	}
+	c := NewWithClient(Config{AdminEmail: "admin@example.com", Now: func() time.Time { return now }}, client)
+
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect() error = %v, want nil", err)
+	}
+	if posture.UsageReportDate != nil {
+		t.Fatalf("UsageReportDate = %q, want nil", *posture.UsageReportDate)
+	}
+	if posture.Users.Total != nil {
+		t.Fatalf("Users.Total = %d, want nil", *posture.Users.Total)
+	}
+	if posture.Authentication.PasskeyUsersPct != nil {
+		t.Fatalf("Authentication.PasskeyUsersPct = %v, want nil", *posture.Authentication.PasskeyUsersPct)
+	}
+	if !hasWarning(posture, "usage report for 2026-03-29 is partial") || !hasWarning(posture, "usage_report") {
+		t.Fatalf("warnings = %v, want the last partial date and the usage_report warning", warningsOf(posture))
 	}
 }
 
@@ -2303,11 +2352,13 @@ func TestCollect_UsageReportWarningsOverTheReportsAPI(t *testing.T) {
 	warning := func(message string) string {
 		return `{"kind":"admin#reports#usageReports","warnings":[{"code":"200","message":"` + message + `"}]}`
 	}
+	// The partial report has 0 passkey users and 0 security keys. The complete
+	// report for the day before has both.
 	partial := func(message string) string {
 		return strings.Replace(usageReport(map[string]int{
 			"accounts:num_users": 8, "accounts:num_suspended_users": 1, "accounts:num_archived_users": 1,
-			"accounts:num_users_2sv_protected": 4, "accounts:num_users_with_passkeys_enrolled": 1,
-			"accounts:num_security_keys": 2, "accounts:num_authorized_apps": 5,
+			"accounts:num_users_2sv_protected": 4, "accounts:num_users_with_passkeys_enrolled": 0,
+			"accounts:num_security_keys": 0, "accounts:num_authorized_apps": 5,
 		}), `{"kind":"admin#reports#usageReports",`,
 			`{"kind":"admin#reports#usageReports","warnings":[{"code":"200","message":"`+message+`"}],`, 1)
 	}
@@ -2335,14 +2386,11 @@ func TestCollect_UsageReportWarningsOverTheReportsAPI(t *testing.T) {
 	} {
 		t.Run("partial data: "+message, func(t *testing.T) {
 			posture := runKitTenant(t, kitTenantWithNewestReport(partial(message)))
-			found := false
-			if posture.Diagnostics != nil {
-				for _, w := range posture.Diagnostics.Warnings {
-					found = found || strings.Contains(w, "partial-data warning")
-				}
-			}
-			if !found {
-				t.Fatalf("diagnostics = %+v, want the partial-data warning", posture.Diagnostics)
+			wantStr(t, "UsageReportDate", posture.UsageReportDate, "2026-04-06")
+			wantInt(t, "Authentication.SecurityKeysTotal", posture.Authentication.SecurityKeysTotal, 2)
+			wantPct(t, "Authentication.PasskeyUsersPct", posture.Authentication.PasskeyUsersPct, 12.5)
+			if !hasWarning(&posture, "usage report for 2026-04-07 is partial") {
+				t.Fatalf("warnings = %v, want the partial report named", warningsOf(&posture))
 			}
 		})
 	}

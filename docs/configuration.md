@@ -226,6 +226,7 @@ collector result lists the permission its call needs as `permission`.
 ### Usage report data is empty
 
 Usage reports cover the previous day, and very new tenants may have none yet.
-The `usage_report_date` field shows which day the artifact covers. When no
-report is available for the last 10 days, `usage_report_date` and the values
-from the report are null.
+The collector skips a day Google marks as partial and uses the newest complete
+report. The `usage_report_date` field shows which day the artifact covers. When
+none of the last 10 days has a complete report, `usage_report_date` and the
+values from the report are null.
